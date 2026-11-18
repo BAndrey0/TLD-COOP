@@ -227,8 +227,10 @@ public class Pathes
 			if (ScenePlacementSync.NativeCooking || ScenePlacementSync.KeepNativeCookingObject(saveObj.GetComponent<GearItem>())) return;
 			var placedPoint = __instance.m_LastGearPlacePoint;
 			if (placedPoint != null && placedPoint.m_FireToAttach != null && placedPoint.GetPlacedGear()?.gameObject == saveObj) return;
-			if (saveObj.GetComponent<DecorationItem>() != null || (saveObj.GetComponent<GearItem>() == null &&
-				saveObj.GetComponent<Il2CppTLD.Placement.Placeable>() != null))
+			var placedGear = saveObj.GetComponent<GearItem>();
+			if (placedGear?.m_Bed?.m_Bedroll == null &&
+				(saveObj.GetComponent<DecorationItem>() != null || (placedGear == null &&
+				saveObj.GetComponent<Il2CppTLD.Placement.Placeable>() != null)))
 			{
 				ScenePlacementSync.PublishFurniture(saveObj);
 				return;
@@ -255,7 +257,7 @@ public class Pathes
 				MyMod.SendDropItem(saveObj.gameObject.GetComponent<GearItem>(), 0, 0, samepose: true, variant);
 				return;
 			}
-			GearItem component2 = saveObj.gameObject.GetComponent<GearItem>();
+			GearItem component2 = placedGear;
 			if (component2 == null)
 			{
 				MelonLogger.Msg(saveObj.gameObject.name + " has not GearItem");
@@ -2613,8 +2615,21 @@ public class Pathes
 	[HarmonyPatch(typeof(BreakDown), "DoBreakDown")]
 	private static class DoBreakDown_Sync
 	{
-		internal static void Postfix(BreakDown __instance)
+		private static bool Prefix(BreakDown __instance, out string __state)
 		{
+			__state = RadialSpawnSync.Active ? RadialSpawnSync.BreakdownId(__instance) : "";
+			return __state.Length == 0 || !RadialSpawnSync.IsBroken(__state);
+		}
+
+		internal static void Postfix(BreakDown __instance, string __state, bool __runOriginal)
+		{
+			if (!__runOriginal) return;
+			if (__state.Length > 0)
+			{
+				RadialSpawnSync.MarkBroken(__state);
+				MyMod.SendBrokeFurniture(__state, "", MyMod.levelid, MyMod.level_guid);
+				return;
+			}
 			if (MyMod.CrazyPatchesLogger)
 			{
 				StackTrace stackTrace = new StackTrace(new StackFrame(needFileInfo: true));
@@ -2885,6 +2900,12 @@ public class Pathes
 	{
 		public static bool Prefix(BreakDown __instance)
 		{
+			string radialId = RadialSpawnSync.Active ? RadialSpawnSync.BreakdownId(__instance) : "";
+			if (radialId.Length > 0 && RadialSpawnSync.IsBroken(radialId))
+			{
+				__instance.gameObject.SetActive(false);
+				return false;
+			}
 			if (MyMod.CrazyPatchesLogger)
 			{
 				StackTrace stackTrace = new StackTrace(new StackFrame(needFileInfo: true));
@@ -2942,6 +2963,7 @@ public class Pathes
 
 		private static bool PrefixInternal(Container c)
 		{
+			if (MyMod.InOnline() && c != null && ContainerLootSync.EnsureId(c).Length == 0) return false;
 			if (MyMod.InOnline() && !CoopContainerFlow.CanStartInteraction(c))
 			{
 				HUDMessage.AddMessage("Заканчиваем предыдущий обыск…");
@@ -5643,11 +5665,15 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
-			if (MyMod.OverridedPositionForSpawn != Vector3.zero)
+			var fixedPosition = MyMod.OverridedPositionForSpawn;
+			string fixedScene = MyMod.FixedSpawnTarget;
+			string destination = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+			if (!Shared.IsMainMenuScene(destination) && destination != "Empty" && destination != "Boot")
 			{
-				__instance.TeleportPlayer(MyMod.OverridedPositionForSpawn, GameManager.GetPlayerTransform().rotation);
-				MelonLogger.Msg(System.ConsoleColor.Magenta, "[TeleportPlayerAfterSceneLoad] X " + MyMod.OverridedPositionForSpawn.x + " Y " + MyMod.OverridedPositionForSpawn.y + " Z " + MyMod.OverridedPositionForSpawn.z);
 				MyMod.OverridedPositionForSpawn = Vector3.zero;
+				MyMod.FixedSpawnTarget = "";
+				if (fixedPosition != Vector3.zero && destination == fixedScene)
+					__instance.TeleportPlayer(fixedPosition, GameManager.GetPlayerTransform().rotation);
 			}
 			if (!string.IsNullOrEmpty(SanityManager.m_TransitionDataBackup))
 			{
@@ -5655,6 +5681,16 @@ public class Pathes
 				SanityManager.m_TransitionDataBackup = "";
 				GameManager.ForceSaveGame();
 			}
+		}
+	}
+
+	[HarmonyPatch(typeof(LoadScene), nameof(LoadScene.PerformSceneLoad))]
+	private static class TraceNativeTransition
+	{
+		private static void Prefix(LoadScene __instance)
+		{
+			if (MyMod.InOnline())
+				MelonLogger.Msg($"[Scene transition] {MyMod.level_name} -> {__instance.GetSceneToLoad()} exit={__instance.m_ExitPointName} guid={__instance.m_GUID} at={GameManager.GetPlayerTransform()?.position}");
 		}
 	}
 
@@ -6486,8 +6522,13 @@ public class Pathes
 	{
 		private static float nextDiagnostic;
 
-		private static void Postfix(SaveState state, bool __result)
+		private static void Postfix(SaveState state, ref bool __result)
 		{
+			if (state == SaveState.InMemory && MyMod.InOnline() && ContainerLootSync.InventoryUncommitted)
+			{
+				__result = false;
+				return;
+			}
 			if (__result || state != SaveState.InMemory || !MyMod.InOnline() || !GameManager.m_PendingSave)
 			{
 				return;
@@ -6538,15 +6579,16 @@ public class Pathes
 	[HarmonyPatch(typeof(WeatherSet), "Update")]
 	internal static class WeatherSet_Update
 	{
-		private static void Prefix(out float __state)
+		private static void Prefix(out (float Scalar, (TimeOfDay Clock, float Scale) WorkClock) __state)
 		{
-			__state = WeatherTransition.m_WeatherTransitionTimeScalar;
+			__state = (WeatherTransition.m_WeatherTransitionTimeScalar, WorkLighting.UseNormalClock());
 			if (ClientHandle.HasCurrentWeatherSync) WeatherTransition.m_WeatherTransitionTimeScalar = 0f;
 		}
 
-		private static void Finalizer(float __state)
+		private static void Finalizer((float Scalar, (TimeOfDay Clock, float Scale) WorkClock) __state)
 		{
-			WeatherTransition.m_WeatherTransitionTimeScalar = __state;
+			WeatherTransition.m_WeatherTransitionTimeScalar = __state.Scalar;
+			WorkLighting.RestoreWorkClock(__state.WorkClock);
 		}
 	}
 

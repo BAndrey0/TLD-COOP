@@ -1342,7 +1342,9 @@ public class Shared
 		}
 	}
 
-	public static void SendContainerData(string DataProxy, string LevelKey, string GUID, string DecompressedBackup, int SendTo = 0)
+	private const int ContainerSliceSize = 768;
+
+	public static void SendContainerData(string DataProxy, string LevelKey, string GUID, string DecompressedBackup, int SendTo = 0, string lease = "")
 	{
 		if (!string.IsNullOrEmpty(DecompressedBackup) && MyMod.sendMyPosition)
 		{
@@ -1353,7 +1355,8 @@ public class Shared
 		{
 			ContainerLootSync.TrackUpload(LevelKey, GUID, DataProxy);
 		}
-		SendSlicedBase64Data(GetBase64Sliced(DataProxy, GUID + "|" + LevelKey, DataStr.SlicedBase64Purpose.Container), SendTo);
+		string identity = GUID + "|" + LevelKey + "|" + (MyMod.sendMyPosition ? ContainerLootSync.UploadLease : lease);
+		SendSlicedBase64Data(GetBase64Sliced(DataProxy, identity, DataStr.SlicedBase64Purpose.Container), SendTo);
 	}
 
 	public static void SendDroppedItemToPicker(string DataProxy, int GiveItemTo, int SearchKey, int GearID, bool place, DataStr.ExtraDataForDroppedGear Extra)
@@ -2964,7 +2967,7 @@ public class Shared
 	public static System.Collections.Generic.List<DataStr.SlicedBase64Data> GetBase64Sliced(string FullString, string GUID, DataStr.SlicedBase64Purpose Purpose)
 	{
 		string checkSum = SHA256CheckSum(FullString);
-		int num = 175;
+		int num = Purpose == DataStr.SlicedBase64Purpose.Container ? ContainerSliceSize : 175;
 		int num2 = (int)Math.Ceiling((double)FullString.Length / (double)num);
 		System.Collections.Generic.List<DataStr.SlicedBase64Data> list = new System.Collections.Generic.List<DataStr.SlicedBase64Data>();
 		for (int i = 0; i < num2; i++)
@@ -2987,31 +2990,51 @@ public class Shared
 	public static void AddBase64Slice(DataStr.SlicedBase64Data Data, int FromClient = 0)
 	{
 		DataStr.SlicedBase64Purpose purpose = (DataStr.SlicedBase64Purpose)Data.m_Purpose;
-		if (!Base64Slices.ContainsKey(Data.m_GUID))
-		{
-			Base64Slices.Add(Data.m_GUID, new DataStr.Base64SliceBase(Data.m_LastSliceIndex + 1));
-		}
-		Base64Slices[Data.m_GUID].SetSlice(Data.m_SliceIndex, Data.m_Slice);
-		if (!Base64Slices[Data.m_GUID].IsReady())
-		{
-			return;
-		}
+		int limit = purpose == DataStr.SlicedBase64Purpose.Container ? ContainerSliceSize : 175;
+		if (Data.m_GUID == null || Data.m_CheckSum == null || Data.m_CheckSum.Length != 64 ||
+			Data.m_Slice == null || Data.m_Slice.Length > limit || Data.m_LastSliceIndex < 0 ||
+			Data.m_LastSliceIndex >= 32768 || Data.m_SliceIndex < 0 || Data.m_SliceIndex > Data.m_LastSliceIndex) return;
 		string text = Data.m_GUID;
 		string text2 = "";
+		string lease = "";
 		if (purpose == DataStr.SlicedBase64Purpose.Container)
 		{
-			text = Data.m_GUID.Split('|')[0];
-			text2 = Data.m_GUID.Split('|')[1];
+			string[] parts = Data.m_GUID.Split('|');
+			if (parts.Length != 3) return;
+			text = parts[0];
+			text2 = parts[1];
+			lease = parts[2];
+			if (!MyMod.iAmHost && (lease != CoopContainerFlow.Lease || !ContainerLootSync.MatchesPending(text2, text))) return;
+			if (MyMod.iAmHost)
+			{
+				if (!ContainerLootSync.CanUpload(FromClient, text2, text, lease, Data.m_CheckSum, out bool saved)) return;
+				if (saved)
+				{
+					if (Data.m_SliceIndex == 0)
+						ServerSend.FINISHEDSENDINGCONTAINER(FromClient, Result: false, text2, text, Data.m_CheckSum, lease);
+					return;
+				}
+			}
 		}
+		string sliceKey = $"{FromClient}|{Data.m_Purpose}|{Data.m_GUID}|{Data.m_CheckSum}";
+		if (!Base64Slices.TryGetValue(sliceKey, out var sliceBuffer))
+		{
+			if (Base64Slices.Count >= 128) Base64Slices.Clear();
+			Base64Slices.Add(sliceKey, sliceBuffer = new DataStr.Base64SliceBase(Data.m_LastSliceIndex + 1));
+		}
+		if (Data.m_LastSliceIndex + 1 != sliceBuffer.m_Slices.Length) return;
+		sliceBuffer.SetSlice(Data.m_SliceIndex, Data.m_Slice);
+		if (!sliceBuffer.IsReady()) return;
 		Log("Finishing getting base64 slices for " + text, LoggerColor.Green);
 		string text3 = "";
-		string[] slices = Base64Slices[Data.m_GUID].m_Slices;
-		Base64Slices.Remove(Data.m_GUID);
+		string[] slices = sliceBuffer.m_Slices;
+		Base64Slices.Remove(sliceKey);
+		var assembled = new StringBuilder();
 		for (int i = 0; i < slices.Length; i++)
 		{
 			if (!string.IsNullOrEmpty(slices[i]))
 			{
-				text3 += slices[i];
+				assembled.Append(slices[i]);
 				continue;
 			}
 			Log("Some slices are missing! Doing another request", LoggerColor.Red);
@@ -3024,7 +3047,7 @@ public class Shared
 			{
 				if (MyMod.iAmHost)
 				{
-					ServerSend.FINISHEDSENDINGCONTAINER(FromClient, Result: true, text2, text, Data.m_CheckSum);
+					ServerSend.FINISHEDSENDINGCONTAINER(FromClient, Result: true, text2, text, Data.m_CheckSum, lease);
 				}
 				if (MyMod.sendMyPosition)
 				{
@@ -3033,6 +3056,7 @@ public class Shared
 			}
 			return;
 		}
+		text3 = assembled.ToString();
 		bool flag = IsBase64String(text3);
 		string text4 = SHA256CheckSum(text3);
 		Log("Final string is base64? " + flag);
@@ -3074,8 +3098,23 @@ public class Shared
 			}
 			if (MyMod.iAmHost)
 			{
-				MPSaveManager.SaveContainer(text2, text, text3);
-				ServerSend.FINISHEDSENDINGCONTAINER(FromClient, Result: false, text2, text, Data.m_CheckSum);
+				bool committed = false;
+				try
+				{
+					var proxy = Utils.DeserializeObject<ContainerSaveDataProxy>(DecompressString(text3));
+					if (proxy != null)
+					{
+						int count = (proxy.m_SerializedItems?.Count ?? 0) + (proxy.m_SerializedDecorationItems?.Count ?? 0) +
+							(proxy.m_GearToInstantiateSerialized?.Count ?? 0);
+						committed = MPSaveManager.SaveContainer(text2, text, count > 0 ? text3 : "-");
+						if (committed) ContainerLootSync.CommitUpload(FromClient, text2, text, lease, Data.m_CheckSum, count > 0 ? 1 : 0);
+					}
+				}
+				catch (Exception ex)
+				{
+					MelonLogger.Warning("[Container loot] Commit failed: " + ex.Message);
+				}
+				ServerSend.FINISHEDSENDINGCONTAINER(FromClient, Result: !committed, text2, text, Data.m_CheckSum, lease);
 			}
 			if (MyMod.sendMyPosition && ContainerLootSync.MatchesPending(text2, text))
 			{
@@ -3103,7 +3142,7 @@ public class Shared
 		{
 			if (MyMod.iAmHost)
 			{
-				ServerSend.FINISHEDSENDINGCONTAINER(FromClient, Result: true, text2, text, Data.m_CheckSum);
+				ServerSend.FINISHEDSENDINGCONTAINER(FromClient, Result: true, text2, text, Data.m_CheckSum, lease);
 			}
 			else if (MyMod.sendMyPosition)
 			{

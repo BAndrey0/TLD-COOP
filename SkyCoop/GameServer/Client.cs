@@ -71,6 +71,7 @@ internal class Client
 		public void Disconnect()
 		{
 			client.Departing = false;
+			client.ContainerScene = client.ContainerGuid = client.ContainerLease = client.ContainerCommit = null;
 			endPoint = null;
 			sid = "";
 			client.Ready = false;
@@ -87,6 +88,10 @@ internal class Client
 	public int TimeOutTime;
 
 	public bool Departing;
+	internal string ContainerScene;
+	internal string ContainerGuid;
+	internal string ContainerLease;
+	internal string ContainerCommit;
 
 	public bool RCON;
 

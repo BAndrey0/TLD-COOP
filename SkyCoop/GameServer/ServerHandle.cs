@@ -33,9 +33,9 @@ internal class ServerHandle
 		}
 		else if (text2 != "RCON")
 		{
-			if (text2 != "0.16.31")
+			if (text2 != "0.16.32")
 			{
-				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.31");
+				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.32");
 				Shared.SendMessageToChat(new DataStr.MultiplayerChatMessage
 				{
 					m_Type = 0,
@@ -1090,23 +1090,37 @@ internal class ServerHandle
 	{
 		string text = _packet.ReadString();
 		string text2 = _packet.ReadString();
-		Log("Client " + _fromClient + " request container data for " + text2);
-		if (ContainerLockSync.IsLockedOnHost(text, text2) || !ContainerLootSync.Reserve(_fromClient, text, text2))
+		string lease = _packet.ReadString();
+		if (_packet.ReadBool())
 		{
-			ServerSend.OPENEMPTYCONTAINER(_fromClient, _msg: false, text, text2);
+			ContainerLootSync.Release(_fromClient, text, text2, lease);
+			return;
+		}
+		Log("Client " + _fromClient + " request container data for " + text2);
+		if (!ContainerLootSync.Reserve(_fromClient, text, text2, lease))
+		{
+			ServerSend.OPENEMPTYCONTAINER(_fromClient, _msg: false, text, text2, lease);
 			return;
 		}
 		string initial = ((_packet.UnreadLength() > 0) ? _packet.ReadString() : "");
-		string orInitialize = ContainerLootSync.GetOrInitialize(text, text2, initial);
+		string orInitialize;
+		try { orInitialize = ContainerLootSync.GetOrInitialize(text, text2, initial); }
+		catch (Exception ex)
+		{
+			ContainerLootSync.Release(_fromClient, text, text2, lease);
+			MelonLogger.Warning("[Container loot] Open failed: " + ex.Message);
+			ServerSend.OPENEMPTYCONTAINER(_fromClient, _msg: false, text, text2, lease);
+			return;
+		}
 		if (orInitialize == "")
 		{
 			Log("Send to client this is empty");
-			ServerSend.OPENEMPTYCONTAINER(_fromClient, _msg: true, text, text2);
+			ServerSend.OPENEMPTYCONTAINER(_fromClient, _msg: true, text, text2, lease);
 		}
 		else
 		{
 			Log("Send to client data about container");
-			Shared.SendContainerData(orInitialize, text, text2, "", _fromClient);
+			Shared.SendContainerData(orInitialize, text, text2, "", _fromClient, lease);
 		}
 	}
 
@@ -1323,6 +1337,8 @@ internal class ServerHandle
 	public static void ADDDEATHCONTAINER(int _fromClient, Packet _packet)
 	{
 		DataStr.DeathContainerData deathContainerData = _packet.ReadDeathContainer();
+		if (!Guid.TryParse(deathContainerData.m_Guid, out Guid stash) ||
+			!ContainerLootSync.Reserve(_fromClient, deathContainerData.m_LevelKey, deathContainerData.m_Guid, stash.ToString("N"))) return;
 		if (!MyMod.DeathCreates.Contains(deathContainerData))
 		{
 			MyMod.DeathCreates.Add(deathContainerData);

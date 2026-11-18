@@ -39,7 +39,7 @@ public class ClientHandle
 		{
 			packet.Write(ClientUser.myId);
 			packet.Write(MyMod.MyChatName);
-			packet.Write("0.16.31");
+			packet.Write("0.16.32");
 			packet.Write(Supporters.MyID);
 			packet.Write(Supporters.ConfiguratedBenefits);
 			packet.Write(ModsValidation.GetModsHash(Force: true, ModsWhiteList).m_Hash);
@@ -991,7 +991,8 @@ public class ClientHandle
 		_packet.ReadInt();
 		string scene = _packet.ReadString();
 		string guid = _packet.ReadString();
-		if (!ContainerLootSync.MatchesPending(scene, guid))
+		string lease = _packet.ReadString();
+		if (lease != CoopContainerFlow.Lease || !ContainerLootSync.MatchesPending(scene, guid))
 		{
 			return;
 		}
@@ -1498,18 +1499,20 @@ public class ClientHandle
 		string text;
 		string guid;
 		string checksum;
+		string lease;
 		try
 		{
 			text = _packet.ReadString();
 			guid = _packet.ReadString();
 			checksum = _packet.ReadString();
+			lease = _packet.ReadString();
 		}
 		catch (Exception)
 		{
 			MelonLogger.Warning("[Container loot] Ignored ACK without upload identity");
 			return;
 		}
-		if (!ContainerLootSync.UploadMatches(text, guid, checksum))
+		if (!ContainerLootSync.UploadMatches(text, guid, checksum) || lease != ContainerLootSync.UploadLease)
 		{
 			MelonLogger.Warning("[Container loot] Ignored stale/mismatched upload ACK");
 			return;
@@ -1519,12 +1522,7 @@ public class ClientHandle
 			ContainerLootSync.CompleteUpload();
 			return;
 		}
-		string containerGUIDDataBackup = Shared.ContainerGUIDDataBackup;
-		if (!string.IsNullOrEmpty(Shared.ContainerDecompressedDataBackup) && !string.IsNullOrEmpty(containerGUIDDataBackup))
-		{
-			MelonLogger.Warning("[Container flow] Retrying unconfirmed contents upload.");
-			Shared.SendContainerData(Shared.CompressString(Shared.ContainerDecompressedDataBackup), text, containerGUIDDataBackup, Shared.ContainerDecompressedDataBackup);
-		}
+		MelonLogger.Warning("[Container flow] Host did not commit the contents. Upload will retry.");
 	}
 
 	public static void TRIGGEREMOTE(Packet _packet)

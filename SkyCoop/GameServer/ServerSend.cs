@@ -286,13 +286,14 @@ internal class ServerSend
 		SendTCPData(_toClient, packet);
 	}
 
-	public static void OPENEMPTYCONTAINER(int _toClient, bool _msg, string scene, string guid)
+	public static void OPENEMPTYCONTAINER(int _toClient, bool _msg, string scene, string guid, string lease)
 	{
 		using Packet packet = new Packet(95);
 		packet.Write(_msg);
 		packet.Write(_toClient);
 		packet.Write(scene);
 		packet.Write(guid);
+		packet.Write(lease);
 		SendTCPData(_toClient, packet);
 	}
 
@@ -1927,7 +1928,7 @@ internal class ServerSend
 			}
 		}
 		packet.WriteUnicodeString(MyMod.CustomServerName);
-		packet.Write("0.16.31");
+		packet.Write("0.16.32");
 		packet.Write(num);
 		packet.Write(maxPlayers);
 		packet.WriteUnicodeString(GetStatusJson(text));
@@ -2016,13 +2017,14 @@ internal class ServerSend
 		}
 	}
 
-	public static void FINISHEDSENDINGCONTAINER(int For, bool Result, string scene = "", string guid = "", string checksum = "")
+	public static void FINISHEDSENDINGCONTAINER(int For, bool Result, string scene, string guid, string checksum, string lease)
 	{
 		using Packet packet = new Packet(156);
 		packet.Write(Result);
 		packet.Write(scene);
 		packet.Write(guid);
 		packet.Write(checksum);
+		packet.Write(lease);
 		SendUDPData(For, packet);
 	}
 

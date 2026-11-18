@@ -63,10 +63,12 @@ public static class RadialSpawnSync
 			__state = Seed(__instance, (held + pending) * 7919 + 17);
 		}
 
-		private static void Postfix(Random.State? __state)
+		private static void Postfix(RadialObjectSpawner __instance)
 		{
-			Restore(__state);
+			if (Active) ApplyBrokenSpawns(__instance);
 		}
+
+		private static void Finalizer(Random.State? __state) => Restore(__state);
 	}
 
 	// Single attempts are seeded by how many items the spawner already holds, so a retry after a failed camera check
@@ -88,9 +90,61 @@ public static class RadialSpawnSync
 			return true;
 		}
 
-		private static void Postfix(Random.State? __state)
+		private static void Postfix(RadialObjectSpawner __instance, bool __result)
 		{
-			Restore(__state);
+			if (__result && Active) ApplyBrokenSpawns(__instance);
+		}
+
+		private static void Finalizer(Random.State? __state) => Restore(__state);
+	}
+
+	private static readonly HashSet<string> Broken = new();
+	private static readonly Dictionary<string, BreakDown> SpawnedBreakables = new();
+	private static string brokenScene;
+
+	private static void UpdateBreakableScene()
+	{
+		if (brokenScene == MyMod.level_guid) return;
+		brokenScene = MyMod.level_guid;
+		Broken.Clear();
+		SpawnedBreakables.Clear();
+	}
+
+	internal static string BreakdownId(BreakDown item)
+	{
+		if (item == null || item.transform.parent == null ||
+			item.transform.parent.GetComponent<RadialObjectSpawner>() == null) return "";
+		var p = item.transform.position;
+		string identity = System.FormattableString.Invariant(
+			$"{GameCompat.StripCloneSuffix(item.name)}|{p.x:F1}|{p.y:F1}|{p.z:F1}");
+		return "radial-" + Shared.StableHash(identity).ToString("X8");
+	}
+
+	internal static void MarkBroken(string id)
+	{
+		UpdateBreakableScene();
+		Broken.Add(id);
+		if (SpawnedBreakables.TryGetValue(id, out var item) && item != null && BreakdownId(item) == id)
+			item.gameObject.SetActive(false);
+	}
+
+	internal static bool IsBroken(string id)
+	{
+		UpdateBreakableScene();
+		return Broken.Contains(id);
+	}
+
+	private static void ApplyBrokenSpawns(RadialObjectSpawner spawner)
+	{
+		UpdateBreakableScene();
+		if (spawner.m_Spawns == null) return;
+		foreach (var obj in spawner.m_Spawns)
+		{
+			var item = obj != null ? obj.GetComponent<BreakDown>() : null;
+			string id = BreakdownId(item);
+			if (id.Length == 0) continue;
+			SpawnedBreakables[id] = item;
+			if (Broken.Contains(id)) obj.SetActive(false);
 		}
 	}
 

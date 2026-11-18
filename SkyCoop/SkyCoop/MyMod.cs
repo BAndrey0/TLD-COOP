@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.31";
+		public const string Version = "0.16.32";
 
 		public const string DownloadLink = null;
 
@@ -607,6 +607,7 @@ public class MyMod : MelonMod
 	public static bool InterloperHook = false;
 
 	public static string OverridedSceneForSpawn = "";
+	internal static string FixedSpawnTarget = "";
 
 	public static Vector3 OverridedPositionForSpawn = Vector3.zero;
 
@@ -1047,24 +1048,9 @@ public class MyMod : MelonMod
 			return;
 		}
 		string key = __instance.m_ObjectGuid.Get();
-		if (BooksResearched.ContainsKey(key))
+		if (BooksResearched.TryGetValue(key, out var hours) && float.IsFinite(hours))
 		{
-			if (BooksResearched.TryGetValue(key, out var value))
-			{
-				__instance.m_ResearchItem.m_ElapsedHours = value;
-			}
-		}
-		else
-		{
-			__instance.m_ResearchItem.m_ElapsedHours = 0f;
-		}
-		if (__instance.m_ResearchItem.IsResearchComplete())
-		{
-			__instance.m_ResearchItem.m_SkillType = SkillType.Firestarting;
-		}
-		else
-		{
-			__instance.m_ResearchItem.m_SkillType = SkillType.ToolRepair;
+			__instance.m_ResearchItem.m_ElapsedHours = MathF.Max(__instance.m_ResearchItem.m_ElapsedHours, hours);
 		}
 	}
 
@@ -1785,6 +1771,16 @@ public class MyMod : MelonMod
 
 	public static void RequestSaveBeforeQuit()
 	{
+		if (ContainerLootSync.InventoryUncommitted || ContainerLootSync.HasPendingUpload)
+		{
+			quitAfterContainer = true;
+			if (CoopContainerFlow.HasActiveSearch) CoopContainerFlow.FinishSearch();
+			else if (!ContainerLootSync.HasPendingUpload && GameCompat.Panel<Panel_Container>() is { isActiveAndEnabled: true } box)
+				box.OnDone();
+			if (!SaveBeforeQuitRequested)
+				HUDMessage.AddMessage("Сохраняем содержимое контейнера перед выходом…");
+			return;
+		}
 		CoopReturnToMenu.NotifyGuestsHostLeaving();
 		PendingSaveExitAction = SaveExitAction.Quit;
 		AfterSavedDisconnect = null;
@@ -1795,6 +1791,19 @@ public class MyMod : MelonMod
 			NoMelonQuit = false;
 			SaveBeforeQuitRequested = true;
 			MelonLogger.Msg("[SaveQuit] Save queued before the native quit lifecycle.");
+		}
+	}
+
+	private static bool quitAfterContainer;
+
+	private static void FinishDeferredQuit()
+	{
+		if (!quitAfterContainer) return;
+		if (!InOnline() || Shared.IsMainMenuScene(level_name)) quitAfterContainer = false;
+		else if (!ContainerLootSync.InventoryUncommitted && !ContainerLootSync.HasPendingUpload)
+		{
+			quitAfterContainer = false;
+			RequestSaveBeforeQuit();
 		}
 	}
 
@@ -1974,10 +1983,10 @@ public class MyMod : MelonMod
 		else if (sendMyPosition)
 		{
 			DoPleaseWait("Please wait...", "Sending container data...");
-			Shared.SendContainerData(Shared.CompressString(text), deathContainerData.m_LevelKey, deathContainerData.m_Guid, text);
 			using Packet packet = new Packet(122);
 			packet.Write(deathContainerData);
 			SendUDPData(packet);
+			Shared.SendContainerData(Shared.CompressString(text), deathContainerData.m_LevelKey, deathContainerData.m_Guid, text);
 		}
 		container.DestroyAllGear();
 		MelonLogger.Msg("Everything dropped");
@@ -2210,7 +2219,8 @@ public class MyMod : MelonMod
 
 	public static void SimUDPHandle(int _packetId, Packet _packet, int _from)
 	{
-		Server.packetHandlers[_packetId](_from, _packet);
+		if (Server.packetHandlers != null && Server.packetHandlers.TryGetValue(_packetId, out var handler))
+			handler(_from, _packet);
 	}
 
 	public static void SimUDPHandle_Client(int _packetId, Packet _packet)
@@ -2272,9 +2282,14 @@ public class MyMod : MelonMod
 
 	public static void RemoveBrokenFurniture(string GUID, string ParentGUID, bool ReBake = true)
 	{
+		if (GUID?.StartsWith("radial-", System.StringComparison.Ordinal) == true)
+		{
+			RadialSpawnSync.MarkBroken(GUID);
+			return;
+		}
 		MelonLogger.Msg("Going to remove furn " + GUID + ParentGUID);
 		GameObject gameObject = ObjectGuidManager.Lookup(GUID);
-		if (!(gameObject != null))
+		if (gameObject == null || gameObject.GetComponent<BreakDown>() == null)
 		{
 			return;
 		}
@@ -6043,6 +6058,7 @@ public class MyMod : MelonMod
 		RegionCompat.SetStartRegion(location);
 		InterloperHook = true;
 		OverridedSceneForSpawn = Data.m_FixedSpawnScene;
+		FixedSpawnTarget = Data.m_FixedSpawnScene;
 		OverridedPositionForSpawn = Data.m_FixedSpawnPosition;
 		GameManager.Instance().LaunchSandbox();
 		if (seed != 0)
@@ -8264,12 +8280,6 @@ public class MyMod : MelonMod
 		string text = box.GetComponent<ObjectGuid>().Get();
 		box.m_Inspected = true;
 		box.m_StartInspected = true;
-		string text2 = box.Serialize();
-		string text3 = Shared.CompressString(text2);
-		if (!string.IsNullOrEmpty(DeBugMenu.ContainerOverride))
-		{
-			text3 = DeBugMenu.ContainerOverride;
-		}
 		bool flag = false;
 		int state = 0;
 		if (box.gameObject.GetComponent<Comps.DeathDropContainer>() != null)
@@ -8288,6 +8298,22 @@ public class MyMod : MelonMod
 			flag = true;
 		}
 		bool flag2 = box.IsEmpty();
+		string text2 = box.Serialize();
+		string text3 = string.IsNullOrEmpty(DeBugMenu.ContainerOverride) ? Shared.CompressString(text2) : DeBugMenu.ContainerOverride;
+		if (sendMyPosition)
+		{
+			// Commit empty and non-empty containers through the same acknowledged upload.
+			ContainerLootSync.AwaitUpload();
+			Shared.SendContainerData(text3, level_guid, text, text2);
+			return;
+		}
+		if (!MPSaveManager.SaveContainer(level_guid, text, flag2 ? "-" : text3))
+		{
+			ContainerLootSync.RetryClose();
+			HUDMessage.AddMessage("Не удалось сохранить содержимое контейнера");
+			return;
+		}
+		ContainerLootSync.HostCloseCommitted();
 		box.DestroyAllGear();
 		if (!flag2)
 		{
@@ -8323,29 +8349,6 @@ public class MyMod : MelonMod
 			{
 				RemoveDeathContainer(text, level_guid);
 			}
-			if (sendMyPosition)
-			{
-				using Packet packet = new Packet(123);
-				packet.Write(text);
-				packet.Write(level_guid);
-				packet.Write(flag);
-				SendUDPData(packet);
-			}
-			else
-			{
-				MPSaveManager.RemoveContainer(level_guid, text);
-			}
-		}
-		else
-		{
-			MelonLogger.Msg("[CloseFakeContainer] Saving container");
-			if (sendMyPosition)
-			{
-				ContainerLootSync.AwaitUpload();
-				Shared.SendContainerData(text3, level_guid, text, text2);
-				return;
-			}
-			MPSaveManager.SaveContainer(level_guid, text, text3);
 		}
 		if (box != null)
 		{
@@ -8361,6 +8364,7 @@ public class MyMod : MelonMod
 		}
 		GameManager.GetPlayerManagerComponent().MaybeRevealPolaroidDiscoveryOnClose();
 		GameCompat.Panel<Panel_Container>().Enable(enable: false);
+		GameManager.ForceSaveGame();
 	}
 
 	public static void InitAudio()
@@ -11122,6 +11126,8 @@ public class MyMod : MelonMod
 		ContainerLidState.Tick();
 		WorkLighting.Tick();
 		CoopReturnToMenu.Tick();
+		ContainerLootSync.Tick();
+		FinishDeferredQuit();
 		ConnectionWatchdog.Tick();
 		MotionSync.Tick();
 		SessionPing.Tick();

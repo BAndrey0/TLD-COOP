@@ -32,6 +32,7 @@ public static class CoopContainerFlow
 	private static Container reopen;
 
 	private static string scene;
+	internal static string Lease { get; private set; }
 
 	private static string buffered;
 
@@ -79,6 +80,8 @@ public static class CoopContainerFlow
 
 	public static bool CanStartInteraction(Container box)
 	{
+		if (MyMod.iAmHost && box != null &&
+			ContainerLootSync.ReservedByGuest(MyMod.level_guid, box.GetComponent<ObjectGuid>()?.Get())) return false;
 		if (!MyMod.SaveExitPending && !CoopReturnToMenu.InProgress && !ContainerLootSync.HasPendingUpload && presentation == null)
 		{
 			if (!(request == null))
@@ -128,6 +131,7 @@ public static class CoopContainerFlow
 		if (!(box == null) && !box.IsLocked() && MyMod.sendMyPosition && !ContainerLootSync.HasPendingUpload && !(request == box) && !(request != null) && !(presentation != null))
 		{
 			request = box;
+			Lease = Guid.NewGuid().ToString("N");
 			scene = MyMod.level_guid;
 			buffered = null;
 			ready = false;
@@ -148,6 +152,8 @@ public static class CoopContainerFlow
 		using Packet packet = new Packet(94);
 		packet.Write(scene);
 		packet.Write(request.GetComponent<ObjectGuid>().Get());
+		packet.Write(Lease);
+		packet.Write(false);
 		packet.Write(ContainerLootSync.NativeSnapshot(request));
 		MyMod.SendUDPData(packet);
 		nextRetry = Clock.Elapsed.TotalSeconds + 3.0;
@@ -404,7 +410,15 @@ public static class CoopContainerFlow
 	{
 		if (request != null && !string.IsNullOrEmpty(scene))
 		{
-			Shared.Base64Slices.Remove(request.GetComponent<ObjectGuid>().Get() + "|" + scene);
+			if (MyMod.sendMyPosition && request.GetComponent<ObjectGuid>() is { } guid)
+			{
+				using Packet packet = new Packet(94);
+				packet.Write(scene);
+				packet.Write(guid.Get());
+				packet.Write(Lease);
+				packet.Write(true);
+				MyMod.SendUDPData(packet);
+			}
 		}
 		if (MyMod.GoingToOpenContinaer == request)
 		{
@@ -432,7 +446,6 @@ public static class CoopContainerFlow
 	{
 		if (!(request == null) && !(scene != packetScene) && !(request.GetComponent<ObjectGuid>().Get() != guid))
 		{
-			Shared.Base64Slices.Remove(guid + "|" + packetScene);
 			ready = false;
 			buffered = null;
 			nextRetry = Clock.Elapsed.TotalSeconds + 0.5;
@@ -448,6 +461,7 @@ public static class CoopContainerFlow
 		presentation = null;
 		reopen = null;
 		scene = null;
+		Lease = null;
 		buffered = null;
 		ready = (activated = (finishRequested = false));
 		legacyInputThroughFrame = -1;

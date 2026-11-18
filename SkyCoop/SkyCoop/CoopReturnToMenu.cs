@@ -384,6 +384,9 @@ public static class CoopReturnToMenu
 		MyMod.NeedSyncTime = false;
 		MyMod.isRuning = false;
 		MyMod.StartServerAfterSelectSave = false;
+		MyMod.OverridedSceneForSpawn = "";
+		MyMod.OverridedPositionForSpawn = Vector3.zero;
+		MyMod.FixedSpawnTarget = "";
 		SteamGameJoin.Suspend();
 		Server.Stop(notifyGuests: false);
 		ClientHandle.ResetSaveJoin();
@@ -414,7 +417,9 @@ public static class CoopReturnToMenu
 		MyMod.DiscardRepeatPacket();
 		MyMod.RemovePleaseWait();
 		MyMod.SlicedJsonDataBuffer.Clear();
+		Shared.Base64Slices.Clear();
 		CoopContainerFlow.Reset();
+		ContainerLootSync.Reset();
 		foreach (GameObject player in MyMod.players)
 		{
 			if (player != null)

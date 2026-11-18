@@ -222,6 +222,7 @@ internal static class ScenePlacementSync
     private static Move CaptureFurniture(GameObject obj)
     {
         if (!InWorld || obj == null) return null;
+        if (obj.GetComponent<GearItem>()?.m_Bed?.m_Bedroll != null) return null;
         var decoration = obj.GetComponent<DecorationItem>();
         if (decoration == null && obj.GetComponent<Placeable>() == null) return null;
         string id = Id(obj);
@@ -332,7 +333,7 @@ internal static class ScenePlacementSync
     {
         private static void Postfix(Placeable __0)
         {
-            if (!InWorld || creatingReplica || PlaceableManager.s_IsDeserializing || __0 == null) return;
+            if (!InWorld || creatingReplica || placingFurniture != null || PlaceableManager.s_IsDeserializing || __0 == null) return;
             var move = CaptureFurniture(__0.gameObject);
             if (move != null && !string.IsNullOrEmpty(move.Asset)) PublishMove(move);
         }
@@ -392,25 +393,37 @@ internal static class ScenePlacementSync
         if (!move.RegisterOnly && !AcceptedOperations.Contains(move.Operation))
         {
             if (moves.Count >= 2048 && !moves.ContainsKey(move.Id)) return;
+            if (moves.TryGetValue(move.Id, out var existing) &&
+                existing with { Operation = move.Operation, Revision = move.Revision } == move)
+            {
+                AckMove(sender, area, move.Operation);
+                return;
+            }
+            move = move with { Revision = revision + 1 };
+            var next = new Dictionary<string, Move>(moves, StringComparer.Ordinal);
+            if (!string.IsNullOrEmpty(move.Anchor))
+                foreach (var old in moves.Values.Where(item => item.Id != move.Id && item.Anchor == move.Anchor))
+                    next.Remove(old.Id);
+            next[move.Id] = move;
+            MPSaveManager.ValidateRootExits();
+            if (!MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(next), MPSaveManager.GetSeed())) return;
+            Saved[area] = next;
+            revision = move.Revision;
             if (OperationOrder.Count >= 8192) AcceptedOperations.Remove(OperationOrder.Dequeue());
             AcceptedOperations.Add(move.Operation);
             OperationOrder.Enqueue(move.Operation);
-            move = move with { Revision = ++revision };
-            if (!string.IsNullOrEmpty(move.Anchor))
-                foreach (var old in moves.Values.Where(existing => existing.Id != move.Id && existing.Anchor == move.Anchor).ToArray())
-                    moves.Remove(old.Id);
-            moves[move.Id] = move;
             MelonLoader.MelonLogger.Msg("[Furniture] Saved move " + move.Id + " in " + area + " revision=" + move.Revision);
-            MPSaveManager.ValidateRootExits();
-            MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(moves), MPSaveManager.GetSeed());
             ReceiveMove(area, move);
             SendToPeers(1, area, JsonSerializer.Serialize(move));
         }
-        if (sender > 0)
-        {
-            using var ack = MakeServerPacket(3, area, move.Operation, 0, 0);
-            ServerSend.SendUDPData(sender, ack);
-        }
+        AckMove(sender, area, move.Operation);
+    }
+
+    private static void AckMove(int sender, string area, string operation)
+    {
+        if (sender <= 0) return;
+        using var ack = MakeServerPacket(3, area, operation, 0, 0);
+        ServerSend.SendUDPData(sender, ack);
     }
 
     private static void ReceiveMove(string area, Move move)
@@ -434,7 +447,8 @@ internal static class ScenePlacementSync
     {
         if (PlaceableManager.s_IsDeserializing) return false;
         if (!string.IsNullOrEmpty(move.Asset) && !ValidFurnitureAsset(move)) return true;
-        var obj = Find(move.Id, move.Anchor, lookup);
+        var obj = !string.IsNullOrEmpty(move.Asset) ? lookup.Find(move.Id)?.gameObject : null;
+        obj ??= Find(move.Id, move.Anchor, lookup);
         if (obj == null && !string.IsNullOrEmpty(move.Asset) && ValidFurnitureAsset(move))
         {
             if (move.Parent.Length > 0 && Find(move.Parent, move.ParentAnchor, lookup) == null) return false;
@@ -1222,6 +1236,7 @@ internal static class ScenePlacementSync
             scene = area;
             ContainerLockSync.Prepare(area);
             SceneRepairSync.Prepare(area);
+            SceneWaterSync.Prepare(area);
             nextRequest = 0;
             if (area != null)
             {
@@ -1249,6 +1264,7 @@ internal static class ScenePlacementSync
         SendToHost(0, area, "");
         foreach (var state in ContainerLockSync.Requests()) PublishLock(state);
         foreach (var id in SceneRepairSync.Requests(area)) PublishRepair(area, id);
+        foreach (var level in SceneWaterSync.Requests()) PublishWaterLevel(area, level);
     }
 
     internal static void ReceiveClient(int from, Packet packet)
@@ -1274,7 +1290,15 @@ internal static class ScenePlacementSync
                     using var reply = MakeServerPacket(11, area, id, 0, 0);
                     ServerSend.SendUDPData(from, reply);
                 }
+                foreach (var water in SceneWaterSync.Snapshot(area))
+                {
+                    using var reply = MakeServerPacket(12, area, JsonSerializer.Serialize(water), 0, 0);
+                    ServerSend.SendUDPData(from, reply);
+                }
+                using var waterReady = MakeServerPacket(13, area, "", 0, 0);
+                ServerSend.SendUDPData(from, waterReady);
             }
+            else if (kind == 12) PublishWaterLevel(area, JsonSerializer.Deserialize<SceneWaterSync.Level>(data));
             else if (kind == 11 && SceneRepairSync.Accept(area, data)) SendToPeers(11, area, data);
             else if (kind == 10) DeathRespawn.ReceiveClient(from, area, key, data);
             else if (kind == 1) AcceptMove(area, JsonSerializer.Deserialize<Move>(data), from);
@@ -1317,6 +1341,8 @@ internal static class ScenePlacementSync
         {
             if (kind == 10) DeathRespawn.Receive(area, key, data);
             else if (kind == 11) SceneRepairSync.Receive(area, data);
+            else if (kind == 12) SceneWaterSync.Receive(area, JsonSerializer.Deserialize<SceneWaterSync.Level>(data));
+            else if (kind == 13) SceneWaterSync.SnapshotComplete(area);
             else if (kind == 1) ReceiveMove(area, JsonSerializer.Deserialize<Move>(data));
             else if (kind == 2) ReceivePot(area, owner, key, JsonSerializer.Deserialize<Pot>(data));
             else if (kind == 4 && int.TryParse(data, out int action) && action >= 1 && action <= 4) ReleaseCookware(key, action, owner);
@@ -1335,6 +1361,13 @@ internal static class ScenePlacementSync
     }
 
     internal static void SendRescueToHost(int subject, string data) => SendToHost(10, MyMod.level_guid, data, subject);
+
+    internal static void PublishWaterLevel(string area, SceneWaterSync.Level level)
+    {
+        if (!MyMod.iAmHost) SendToHost(12, area, JsonSerializer.Serialize(level));
+        else if (SceneWaterSync.Accept(area, level) is { } saved)
+            SendToPeers(12, area, JsonSerializer.Serialize(saved));
+    }
 
     internal static void BroadcastDowned(string area, int subject, string data) => SendToPeers(10, area, data, key: subject);
 

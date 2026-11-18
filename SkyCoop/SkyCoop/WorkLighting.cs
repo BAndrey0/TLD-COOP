@@ -1,3 +1,4 @@
+using HarmonyLib;
 using Il2Cpp;
 using UnityEngine;
 namespace SkyCoop;
@@ -6,7 +7,7 @@ public static class WorkLighting
  private static TimeOfDay owner;private static float scale,deadline;
  public static void Begin(TimeOfDay tod,float duration)
  {
-  if(!MyMod.InOnline()||tod==null)return;
+  if(!MyMod.InOnline()||tod==null||GameManager.m_Rest?.IsSleeping()==true)return;
   if(owner==null){owner=tod;scale=VitalNumbers.Rate(tod.GetDayLengthScale(),1);}
   deadline=Time.realtimeSinceStartup+VitalNumbers.Rate(duration,30)+10;
  }
@@ -19,7 +20,7 @@ public static class WorkLighting
  internal static (TimeOfDay Clock, float Scale) UseNormalClock()
  {
   var clock = owner;
-  if (clock == null || !clock.IsTimeLapseActive() || GameManager.m_Rest?.IsSleeping() == true) return default;
+  if (clock == null || GameManager.m_Rest?.IsSleeping() == true) return default;
   float accelerated = clock.GetDayLengthScale();
   if (accelerated == scale) return default;
   clock.SetDayLengthScale(scale);
@@ -29,6 +30,18 @@ public static class WorkLighting
  internal static void RestoreWorkClock((TimeOfDay Clock, float Scale) state)
  {
   if (state.Clock != null) state.Clock.SetDayLengthScale(state.Scale);
+ }
+
+ [HarmonyPatch]
+ private static class WorldClockUpdate
+ {
+  private static System.Collections.Generic.IEnumerable<System.Reflection.MethodBase> TargetMethods()
+  {
+   yield return AccessTools.Method(typeof(TimeOfDay), nameof(TimeOfDay.Update));
+   yield return AccessTools.Method(typeof(WeatherTransition), nameof(WeatherTransition.Update));
+  }
+  private static void Prefix(out (TimeOfDay Clock, float Scale) __state) => __state = UseNormalClock();
+  private static void Finalizer((TimeOfDay Clock, float Scale) __state) => RestoreWorkClock(__state);
  }
  private static void Restore(TimeOfDay tod)
  {

@@ -14,6 +14,7 @@ internal static class SceneRepairSync
     private const int MaxRepairsPerScene = 1024;
     private static readonly Dictionary<string, RepairableInteractiveItem> Local = new(StringComparer.Ordinal);
     private static readonly Dictionary<int, string> LocalIds = new();
+    private static readonly HashSet<string> Received = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, HashSet<string>> Saved = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, HashSet<string>> Pending = new(StringComparer.Ordinal);
     private static int seed;
@@ -36,6 +37,7 @@ internal static class SceneRepairSync
         scene = area;
         Local.Clear();
         LocalIds.Clear();
+        Received.Clear();
         if (area == null) return;
         UpdateWorld();
 
@@ -44,14 +46,22 @@ internal static class SceneRepairSync
         foreach (var item in UnityEngine.Object.FindObjectsOfType<RepairableInteractiveItem>(true))
         {
             if (item == null || !item.gameObject.scene.IsValid()) continue;
-            string id = Id(item);
-            if (!Local.TryAdd(id, item)) continue;
-            LocalIds[item.GetInstanceID()] = id;
+            string id = Register(item);
             if (repaired == null) continue;
             if (repaired.Contains(id)) Receive(area, id);
             else if (item.IsRepaired) changed |= repaired.Add(id);
         }
         if (changed) Save(area, repaired);
+    }
+
+    private static string Register(RepairableInteractiveItem item)
+    {
+        int instance = item.GetInstanceID();
+        if (LocalIds.TryGetValue(instance, out string id)) return id;
+        id = Id(item);
+        Local[id] = item;
+        LocalIds[instance] = id;
+        return id;
     }
 
     private static string Id(RepairableInteractiveItem item)
@@ -78,8 +88,11 @@ internal static class SceneRepairSync
         return Saved[area] = repairs ?? new(StringComparer.Ordinal);
     }
 
-    private static void Save(string area, HashSet<string> repairs) =>
-        MPSaveManager.SaveData(area + "_Repairs", JsonSerializer.Serialize(repairs), seed);
+    private static bool Save(string area, HashSet<string> repairs)
+    {
+        MPSaveManager.ValidateRootExits();
+        return MPSaveManager.SaveData(area + "_Repairs", JsonSerializer.Serialize(repairs), seed);
+    }
 
     internal static IEnumerable<string> Snapshot(string area) => GetSaved(area);
 
@@ -91,9 +104,13 @@ internal static class SceneRepairSync
         if (!Valid(id)) return false;
         var repaired = GetSaved(area);
         if (repaired.Contains(id)) return true;
-        if (repaired.Count >= MaxRepairsPerScene || (area == scene && !Local.ContainsKey(id))) return false;
+        if (repaired.Count >= MaxRepairsPerScene) return false;
         repaired.Add(id);
-        Save(area, repaired);
+        if (!Save(area, repaired))
+        {
+            repaired.Remove(id);
+            return false;
+        }
         Receive(area, id);
         return true;
     }
@@ -101,10 +118,25 @@ internal static class SceneRepairSync
     internal static void Receive(string area, string id)
     {
         if (Pending.TryGetValue(area, out var repairs)) repairs.Remove(id);
-        if (area != scene || !Local.TryGetValue(id, out var item) || item == null || item.IsRepaired) return;
-        item.Deserialize(new RepairableItemSaveState { m_Guid = item.GetComponent<ObjectGuid>()?.Get() ?? id, m_IsRepaired = true });
+        if (area != scene || !Valid(id)) return;
+        Received.Add(id);
+        if (!Local.TryGetValue(id, out var item) || item == null) return;
+        if (!item.IsRepaired)
+            item.Deserialize(new RepairableItemSaveState { m_Guid = item.GetComponent<ObjectGuid>()?.Get() ?? id, m_IsRepaired = true });
         if (item.m_FixedGameobject != null) item.m_FixedGameobject.SetActive(true);
         if (item.m_BrokenGameobject != null) item.m_BrokenGameobject.SetActive(false);
+        item.UpdateText();
+    }
+
+    [HarmonyPatch(typeof(RepairableInteractiveItem), nameof(RepairableInteractiveItem.InitializeInteraction))]
+    private static class RepairableInitialized
+    {
+        private static void Postfix(RepairableInteractiveItem __instance)
+        {
+            if (scene == null || scene != MyMod.level_guid || !MyMod.InOnline() || MyMod.LoadingScreenIsOn) return;
+            string id = Register(__instance);
+            if (Received.Contains(id) || MyMod.iAmHost && GetSaved(scene).Contains(id)) Receive(scene, id);
+        }
     }
 
     [HarmonyPatch(typeof(RepairableInteractiveItem), nameof(RepairableInteractiveItem.OnAnimatedInteractionEnd))]
@@ -114,8 +146,8 @@ internal static class SceneRepairSync
 
         private static void Postfix(RepairableInteractiveItem __instance, bool __state)
         {
-            if (__state || !__instance.IsRepaired || scene == null || !MyMod.InOnline() ||
-                !LocalIds.TryGetValue(__instance.GetInstanceID(), out var id)) return;
+            if (__state || !__instance.IsRepaired || scene == null || scene != MyMod.level_guid || !MyMod.InOnline()) return;
+            var id = Register(__instance);
             if (!MyMod.iAmHost)
             {
                 if (!Pending.TryGetValue(scene, out var repairs)) Pending[scene] = repairs = new(StringComparer.Ordinal);

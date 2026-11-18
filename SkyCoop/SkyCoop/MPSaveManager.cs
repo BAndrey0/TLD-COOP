@@ -917,12 +917,12 @@ public class MPSaveManager
 		}
 	}
 
-	public static void SaveContainer(string scene, string GUID, string Content)
+	public static bool SaveContainer(string scene, string GUID, string Content)
 	{
 		int seed = GetSeed();
 		string keyTemplate = GetKeyTemplate(SaveKeyTemplateType.Container, scene, GUID);
 		ValidateRootExits();
-		SaveData(keyTemplate, Content, seed);
+		return SaveData(keyTemplate, Content, seed);
 	}
 
 	public static string LoadContainer(string scene, string GUID)
@@ -930,7 +930,8 @@ public class MPSaveManager
 		int seed = GetSeed();
 		string keyTemplate = GetKeyTemplate(SaveKeyTemplateType.Container, scene, GUID);
 		ValidateRootExits();
-		return LoadData(keyTemplate, seed, Compressed: true);
+		string contents = LoadData(keyTemplate, seed, Compressed: true);
+		return contents == "-" ? "" : contents;
 	}
 
 	public static void RemoveContainer(string scene, string GUID)
@@ -941,8 +942,10 @@ public class MPSaveManager
 
 	public static bool ContainerNotEmpty(string Scene, string GUID)
 	{
-		int seed = GetSeed();
-		return IsFileExist(GetKeyTemplate(SaveKeyTemplateType.Container, Scene, GUID), seed);
+		if (NoSaveAndLoad) return false;
+		string path = GetPathForName(GetKeyTemplate(SaveKeyTemplateType.Container, Scene, GUID), GetSeed());
+		var file = new FileInfo(path);
+		return file.Exists && file.Length > 1;
 	}
 
 	public static Dictionary<string, bool> LoadOpenableThings(string scene)
@@ -1354,14 +1357,18 @@ public class MPSaveManager
 	public static void AddBrokenFurn(DataStr.BrokenFurnitureSync furn)
 	{
 		string levelGUID = furn.m_LevelGUID;
-		string key = furn.m_LevelGUID + furn.m_ParentGuid;
+		string key = furn.m_Guid + "|" + furn.m_ParentGuid;
 		Dictionary<string, DataStr.BrokenFurnitureSync> dictionary = LoadFurnsData(levelGUID);
 		if (dictionary == null)
 		{
 			dictionary = new Dictionary<string, DataStr.BrokenFurnitureSync>();
 		}
-		dictionary.Remove(key);
-		dictionary.Add(key, furn);
+		foreach (var old in dictionary.Where(entry => entry.Value.m_Guid == furn.m_Guid &&
+			entry.Value.m_ParentGuid == furn.m_ParentGuid && entry.Key != key).Select(entry => entry.Key).ToArray())
+			dictionary.Remove(old);
+		dictionary[key] = furn;
+		ValidateRootExits();
+		SaveData(GetKeyTemplate(SaveKeyTemplateType.Furns, levelGUID), JSON.Dump(dictionary), GetSeed());
 		RecentBrokenFurns.Remove(levelGUID);
 		RecentBrokenFurns.Add(levelGUID, dictionary);
 	}
