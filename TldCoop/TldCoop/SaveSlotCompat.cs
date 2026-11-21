@@ -80,8 +80,8 @@ public static class SaveSlotCompat
 	public static string LoadDataFromSlot(string name, string key)
 	{
 		string value = ReadDataFromSlot(name, key);
-		return value ?? (key.StartsWith("tldcoop_", System.StringComparison.Ordinal)
-			? ReadDataFromSlot(name, "skycoop_" + key.Substring("tldcoop_".Length)) : null);
+		string previousKey = LegacySaveNames.PreviousKey(key);
+		return previousKey == null ? value : LegacySaveNames.UpgradeTypeNames(value ?? ReadDataFromSlot(name, previousKey));
 	}
 
 	private static string ReadDataFromSlot(string name, string key)

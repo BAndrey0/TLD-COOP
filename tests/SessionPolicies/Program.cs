@@ -11,6 +11,11 @@ static class Program
   var escapedCooking = System.Text.Json.JsonSerializer.Serialize(new { NativeHover = new string('я', 300), Meshes = new string('A', 256) });
   Check(escapedCooking.Length > 1100 && escapedCooking.Length <= SceneMessageLimits.PayloadLimit(2), "Escaped Russian cooking labels must pass the scene packet size check");
         Check(SceneMessageLimits.PayloadLimit(1) == 4096, "Furniture replays can carry bounded position history");
+        Check(LegacySaveNames.PreviousKey("tldcoop_ropes") == "skycoop_ropes" &&
+            LegacySaveNames.PreviousKey("global") == null, "Only co-op save keys may use the previous namespace");
+        string rope = "[{\"@type\":\"SkyCoop.DataStr+ClimbingRopeSync\"}]";
+        Check(LegacySaveNames.UpgradeTypeNames(rope).Contains("TldCoop.DataStr+ClimbingRopeSync") &&
+            LegacySaveNames.UpgradeTypeNames(null) == null, "Legacy rope type names resolve when loading a saved slot");
         var revisions = new System.Collections.Generic.Dictionary<string, long> { ["box"] = 7, ["bench"] = 10 };
         string stamp = FurnitureReplicationPolicy.Stamp(revisions);
         var snapshot = new FurnitureSnapshot<string>();

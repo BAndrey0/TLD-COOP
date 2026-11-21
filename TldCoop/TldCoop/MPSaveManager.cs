@@ -1632,7 +1632,7 @@ public class MPSaveManager
 		{
 			Json = Shared.DecompressString(Json);
 		}
-		Json = Json.Replace("SkyCoop.MyMod", "TldCoop.DataStr").Replace("SkyCoop.DataStr", "TldCoop.DataStr");
+		Json = LegacySaveNames.UpgradeTypeNames(Json);
 		if (Decompress)
 		{
 			Json = Shared.CompressString(Json);
