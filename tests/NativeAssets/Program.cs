@@ -3,7 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using AssetsTools.NET;
-using SkyCoop;
+using TldCoop;
 
 string cab="CAB-0123456789abcdef0123456789abcdef";
 string input=cab+".resS|archive:/"+cab+"/"+cab+"|CAB-not-a-guid";

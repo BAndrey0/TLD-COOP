@@ -16,14 +16,14 @@ using Microsoft.Win32;
 
 namespace CoopLauncher;
 
-// TLD-SkyCoop launcher: installs the separate co-op copy of the game, keeps the mod updated from GitHub releases and
+// TLD-COOP launcher: installs the separate co-op copy of the game, keeps the mod updated from GitHub releases and
 // starts the game. It drives the same kit scripts as Install.cmd / Update.cmd / Play-Coop.cmd (downloaded with each
 // release into friend-kit next to the launcher), so installing by hand and through the launcher give the same result.
 //
 // Folder layout (the launcher's own folder is the root):
 //   TLD-Coop-Launcher.exe, launcher.json
 //   friend-kit\   kit of the installed or newest release
-//   downloads\    release archives, MelonLoader, .NET runtime, SkyCoop assets (cached, checksummed by the scripts)
+//   downloads\    release archives, MelonLoader, .NET runtime, mod assets (cached, checksummed by the scripts)
 //   player\       the co-op copy of the game (default; any English-letter path can be chosen)
 internal static class Program
 {
@@ -85,7 +85,7 @@ internal sealed class ReleaseInfo
 
 internal sealed partial class LauncherForm : Form
 {
-	private const string Repository = "BAndrey0/TLD-SkyCoop";
+	private const string Repository = "BAndrey0/TLD-COOP";
 
 	private static readonly Version LauncherVersion = typeof(LauncherForm).Assembly.GetName().Version;
 
@@ -186,7 +186,7 @@ internal sealed partial class LauncherForm : Form
 			Log("ВНИМАНИЕ: в пути к лаунчеру есть русские буквы. MelonLoader с таким путём работает ненадёжно. Перенесите папку лаунчера, например, в D:\\TLD-Coop.");
 		}
 		RefreshView();
-		if (Environment.GetEnvironmentVariable("SKYCOOP_LAUNCHER_PREVIEW") != "1") await CheckForUpdates();
+		if (Environment.GetEnvironmentVariable("TLD_COOP_LAUNCHER_PREVIEW") != "1") await CheckForUpdates();
 	}
 
 	private void LoadState()
@@ -397,7 +397,7 @@ internal sealed partial class LauncherForm : Form
 					string url = asset.TryGetValue("browser_download_url", out object au) ? (au as string ?? "") : "";
 					string digest = asset.TryGetValue("digest", out object ad) ? (ad as string ?? "") : "";
 					string hash = digest.StartsWith("sha256:",StringComparison.OrdinalIgnoreCase) ? digest.Substring(7) : "";
-					if (Regex.IsMatch(name, "^TLD-SkyCoop-.*\\.zip$", RegexOptions.IgnoreCase))
+					if (Regex.IsMatch(name, "^TLD-COOP-.*\\.zip$", RegexOptions.IgnoreCase))
 					{
 						info.ZipName = name;
 						info.ZipUrl = url;

@@ -1,5 +1,5 @@
 using System;
-using SkyCoop;
+using TldCoop;
 
 static class Program
 {
@@ -11,6 +11,25 @@ static class Program
   var escapedCooking = System.Text.Json.JsonSerializer.Serialize(new { NativeHover = new string('я', 300), Meshes = new string('A', 256) });
   Check(escapedCooking.Length > 1100 && escapedCooking.Length <= SceneMessageLimits.PayloadLimit(2), "Escaped Russian cooking labels must pass the scene packet size check");
         Check(SceneMessageLimits.PayloadLimit(1) == 4096, "Furniture replays can carry bounded position history");
+        var revisions = new System.Collections.Generic.Dictionary<string, long> { ["box"] = 7, ["bench"] = 10 };
+        string stamp = FurnitureReplicationPolicy.Stamp(revisions);
+        var snapshot = new FurnitureSnapshot<string>();
+        snapshot.Complete(stamp);
+        snapshot.Add("bench", 10, "bench");
+        snapshot.Add("bench", 10, "repeated bench");
+        Check(!snapshot.TryRead(out _), "Missing furniture packet must keep the scene snapshot incomplete");
+        snapshot.Add("box", 7, "box");
+        Check(snapshot.TryRead(out var records) && records.Length == 2 && System.Array.IndexOf(records, "repeated bench") < 0,
+            "Out-of-order furniture snapshot commits each item once");
+        Check(!snapshot.TryRead(out _), "A completed furniture snapshot must not replay again");
+        Check(FurnitureReplicationPolicy.CanCommit(10, 10) && !FurnitureReplicationPolicy.CanCommit(10, 11),
+            "A second guest cannot overwrite furniture moved since their last snapshot");
+        Check(!FurnitureReplicationPolicy.CanCreate(2, true, 2) && !FurnitureReplicationPolicy.CanCreate(0, true, 1) &&
+            FurnitureReplicationPolicy.CanCreate(0, true, 0), "Do not spawn a third copy when a legacy item could not be identified");
+        float firstGrant = WaterWithdrawalPolicy.Granted(1f, .6f);
+        float secondGrant = WaterWithdrawalPolicy.Granted(1f - firstGrant, .6f);
+        Check(System.Math.Abs(firstGrant + secondGrant - 1f) < .0001f && WaterWithdrawalPolicy.Granted(0f, .6f) == 0f,
+            "Concurrent withdrawals may distribute at most the original water volume");
   Check(!DroppedMovePolicy.ReturnPreviewOnRestore(true, true), "Native restore during confirmation must not cancel the pending move");
   Check(DroppedMovePolicy.ReturnPreviewOnRestore(false, true), "Cancelling a preview must restore its source");
   Check(!DroppedMovePolicy.ReturnPreviewOnRestore(false, false), "Native furniture is not a dropped preview");
@@ -48,7 +67,7 @@ static class Program
    Check(names.SetEquals(new[]{"GEAR_Rifle","GEAR_Water"}),"Serialized aliases must retain gear and reject meshes");
    Check(new System.Collections.Generic.List<string>(GearCatalogPolicy.ReadKeyNames(new byte[]{0,0,0,0,0,255,255,255,127})).Count==0,"Truncated key records must not read outside the buffer");
   }
-  string catalog=Environment.GetEnvironmentVariable("SKYCOOP_CATALOG_FILE");
+  string catalog=Environment.GetEnvironmentVariable("TLD_COOP_CATALOG_FILE");
   if(!string.IsNullOrEmpty(catalog)) {var names=new System.Collections.Generic.HashSet<string>(GearCatalogPolicy.ReadCatalog(catalog));Check(names.Count>=441&&names.Contains("GEAR_Rifle"),"Installed catalog must retain prefab inventory and key aliases");Console.WriteLine("Catalog metadata: "+names.Count+" gear IDs");}
   Check(GearCatalogPolicy.GearName("Assets/Gear/GEAR_Rifle.prefab")=="GEAR_Rifle","Catalog prefab paths must resolve to item IDs");
   Check(GearCatalogPolicy.GearName("GEAR_Rifle")=="GEAR_Rifle","Direct catalog item address must be retained");
@@ -172,7 +191,7 @@ static class Program
   Console.WriteLine($"PASS: {checks} session and wildlife checks");
  }
 }
-namespace SkyCoop
+namespace TldCoop
 {
  static class MyMod
  {

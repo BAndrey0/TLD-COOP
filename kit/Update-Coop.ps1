@@ -39,6 +39,14 @@ foreach($legacyName in @('SkyCoop.dll','SkyCoopHotfix.dll')){
  $obsolete=Join-Path $game ('Mods\'+$legacyName)
  if(Test-Path -LiteralPath $obsolete){Move-Item -LiteralPath $obsolete -Destination (Join-Path $backup $legacyName) -Force}
 }
+$prefs=Join-Path $game 'UserData\MelonPreferences.cfg'
+if(Test-Path -LiteralPath $prefs){
+ $settings=[IO.File]::ReadAllText($prefs)
+ if($settings -match '(?m)^\[SkyCoop\]\s*$' -and $settings -notmatch '(?m)^\[TLD-COOP\]\s*$'){
+  Copy-Item -LiteralPath $prefs -Destination (Join-Path $backup 'MelonPreferences.cfg')
+  [IO.File]::WriteAllText($prefs, ($settings -replace '(?m)^\[SkyCoop\](?=\r?$)','[TLD-COOP]'))
+ }
+}
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $target 'coop-version.json')
 Remove-Item -LiteralPath $marker
 Write-Host "Updated: $target"

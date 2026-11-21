@@ -7,16 +7,16 @@ if(Get-Process tld -ErrorAction SilentlyContinue){throw 'Close the game before t
 $qa=Join-Path $root '.model-qa';New-Item -ItemType Directory -Path $qa -Force|Out-Null
 $installed=Join-Path $GameDir 'Mods\TLD-Coop.dll'
 if(!(Test-Path -LiteralPath $installed)){$installed=Join-Path $GameDir 'Mods\SkyCoop.dll'}
-$built=Join-Path $root 'SkyCoop\bin\Release\netcoreapp6.0\TLD-Coop.dll'
-if(!(Test-Path -LiteralPath $built)){throw 'Build SkyCoop first with check-fast.ps1.'}
+$built=Join-Path $root 'TldCoop\bin\Release\netcoreapp6.0\TLD-Coop.dll'
+if(!(Test-Path -LiteralPath $built)){throw 'Build TLD-COOP first with check-fast.ps1.'}
 $backup=Join-Path $qa 'original.dll';Copy-Item -LiteralPath $installed -Destination $backup -Force
 $digest=(Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash
 $render=Join-Path $qa ('models-'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')+'.jpg')
-$vars=@{DOTNET_ROOT=(Join-Path (Split-Path $GameDir -Parent) 'runtime');DOTNET_MULTILEVEL_LOOKUP='0';SteamAppId='305620';SteamGameId='305620';SKYCOOP_TEST_SAVE_ROOT=(Join-Path $qa 'saves');SKYCOOP_MODEL_ONLY_TEST='1';SKYCOOP_MODEL_RENDER=$render}
-if($Catalog){$render=[IO.Path]::ChangeExtension($render,'txt');$vars['SKYCOOP_MODEL_RENDER']=$render;$vars['SKYCOOP_CATALOG_PROBE']='1'}
-if($Switching){$render=[IO.Path]::ChangeExtension($render,'txt');$vars['SKYCOOP_MODEL_RENDER']=$render;$vars['SKYCOOP_MODEL_SWITCHING_TEST']='1'}
+$vars=@{DOTNET_ROOT=(Join-Path (Split-Path $GameDir -Parent) 'runtime');DOTNET_MULTILEVEL_LOOKUP='0';SteamAppId='305620';SteamGameId='305620';TLD_COOP_TEST_SAVE_ROOT=(Join-Path $qa 'saves');TLD_COOP_MODEL_ONLY_TEST='1';TLD_COOP_MODEL_RENDER=$render}
+if($Catalog){$render=[IO.Path]::ChangeExtension($render,'txt');$vars['TLD_COOP_MODEL_RENDER']=$render;$vars['TLD_COOP_CATALOG_PROBE']='1'}
+if($Switching){$render=[IO.Path]::ChangeExtension($render,'txt');$vars['TLD_COOP_MODEL_RENDER']=$render;$vars['TLD_COOP_MODEL_SWITCHING_TEST']='1'}
 $saved=@{};$child=$null
-if($Alignment){$vars['SKYCOOP_MODEL_ALIGNMENT_TEST']='1'}
+if($Alignment){$vars['TLD_COOP_MODEL_ALIGNMENT_TEST']='1'}
 try{
  Copy-Item -LiteralPath $built -Destination $installed -Force
  foreach($key in $vars.Keys){$saved[$key]=[Environment]::GetEnvironmentVariable($key,'Process');[Environment]::SetEnvironmentVariable($key,$vars[$key],'Process')}

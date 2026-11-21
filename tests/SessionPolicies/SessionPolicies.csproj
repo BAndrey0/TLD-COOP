@@ -1,21 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../SkyCoop/SkyCoop/DroppedMovePolicy.cs" Link="DroppedMovePolicy.cs" />
-    <Compile Include="../../SkyCoop/SkyCoop/SceneMessageLimits.cs" Link="SceneMessageLimits.cs" />
-    <Compile Include="../../SkyCoop/SkyCoop/FireClockPolicy.cs" Link="FireClockPolicy.cs" />
-    <Compile Include="../../SkyCoop/SkyCoop/WorldSaveMatch.cs" Link="WorldSaveMatch.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/GearCatalogPolicy.cs" Link="GearCatalogPolicy.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/ModelProportions.cs" Link="ModelProportions.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/VitalNumbers.cs" Link="VitalNumbers.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/AttemptBudget.cs" Link="AttemptBudget.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/LidTransition.cs" Link="LidTransition.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/MotionTiming.cs" Link="MotionTiming.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/MotionWire.cs" Link="MotionWire.cs" />
-	<Compile Include="../../SkyCoop/SkyCoop/FatigueTravelLedger.cs" Link="FatigueTravelLedger.cs" />
-    <Compile Include="../../SkyCoop/SkyCoop/CoopBalancePolicy.cs" Link="CoopBalancePolicy.cs" />
-    <Compile Include="../../SkyCoop/SkyCoop/ConnectionWatchdog.cs" Link="ConnectionWatchdog.cs" />
-    <Compile Include="../../SkyCoop/SkyCoop/WildlifeSpawnAuthorityPolicy.cs" Link="WildlifeSpawnAuthorityPolicy.cs" />
-    <Compile Include="../../SkyCoop/SkyCoop/WildlifeOwnershipPolicy.cs" Link="WildlifeOwnershipPolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/DroppedMovePolicy.cs" Link="DroppedMovePolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/SceneMessageLimits.cs" Link="SceneMessageLimits.cs" />
+    <Compile Include="../../TldCoop/TldCoop/FurnitureReplicationPolicy.cs" Link="FurnitureReplicationPolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/WaterWithdrawalPolicy.cs" Link="WaterWithdrawalPolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/FireClockPolicy.cs" Link="FireClockPolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/WorldSaveMatch.cs" Link="WorldSaveMatch.cs" />
+	<Compile Include="../../TldCoop/TldCoop/GearCatalogPolicy.cs" Link="GearCatalogPolicy.cs" />
+	<Compile Include="../../TldCoop/TldCoop/ModelProportions.cs" Link="ModelProportions.cs" />
+	<Compile Include="../../TldCoop/TldCoop/VitalNumbers.cs" Link="VitalNumbers.cs" />
+	<Compile Include="../../TldCoop/TldCoop/AttemptBudget.cs" Link="AttemptBudget.cs" />
+	<Compile Include="../../TldCoop/TldCoop/LidTransition.cs" Link="LidTransition.cs" />
+	<Compile Include="../../TldCoop/TldCoop/MotionTiming.cs" Link="MotionTiming.cs" />
+	<Compile Include="../../TldCoop/TldCoop/MotionWire.cs" Link="MotionWire.cs" />
+	<Compile Include="../../TldCoop/TldCoop/FatigueTravelLedger.cs" Link="FatigueTravelLedger.cs" />
+    <Compile Include="../../TldCoop/TldCoop/CoopBalancePolicy.cs" Link="CoopBalancePolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/ConnectionWatchdog.cs" Link="ConnectionWatchdog.cs" />
+    <Compile Include="../../TldCoop/TldCoop/WildlifeSpawnAuthorityPolicy.cs" Link="WildlifeSpawnAuthorityPolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/WildlifeOwnershipPolicy.cs" Link="WildlifeOwnershipPolicy.cs" />
   </ItemGroup>
 </Project>

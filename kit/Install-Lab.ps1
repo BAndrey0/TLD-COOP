@@ -18,7 +18,7 @@ $marker=Join-Path $target '.install-incomplete';'Installation in progress'|Set-C
 if($DeferInstallLocation){'Save migration in progress' | Set-Content -LiteralPath (Join-Path $target '.migration-incomplete')}
 function Fetch($name,$url,$hash){$p=Join-Path $cache $name;if(!(Test-Path -LiteralPath $p)){[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $p};if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $hash){throw "Checksum mismatch: $name"};return $p}
 $loader=Fetch 'MelonLoader-0.7.3-x64.zip' 'https://github.com/LavaGang/MelonLoader/releases/download/v0.7.3/MelonLoader.x64.zip' '5B2B2F3D1CD42B59EC886C5BDC2663EDAE87A0097A4F4A8F58C0965A99DDA416'
-$assets=Fetch 'SkyCoop-v13.2.zip' 'https://github.com/Filigrani/SkyCoop/releases/download/v13.2/SkyCoopRelease.zip' '6FEE0723EBD72AF22C5362AA7DE966881875962305599DC38F321118E0B661B2'
+$assets=Fetch 'multiplayer-assets-v13.2.zip' 'https://github.com/Filigrani/SkyCoop/releases/download/v13.2/SkyCoopRelease.zip' '6FEE0723EBD72AF22C5362AA7DE966881875962305599DC38F321118E0B661B2'
 $runtime=Fetch 'dotnet-runtime-6.0.36-win-x64.zip' 'https://builds.dotnet.microsoft.com/dotnet/Runtime/6.0.36/dotnet-runtime-6.0.36-win-x64.zip' 'C077CCC342C5571CEB7A3C06D1DFBC99B989ED5A6E0F3A0B0B450531C1259615'
 Write-Host 'Copying your game to a separate folder (about 21.4 GB)...'
 & robocopy $source $game /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP

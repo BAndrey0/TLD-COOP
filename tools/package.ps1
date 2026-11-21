@@ -1,6 +1,6 @@
 # Builds TLD-Coop.dll and CoopProfile.dll and assembles the player kit:
 #   out\friend-kit\{Install.cmd, Update.cmd, ..., files\*.dll, manifest.json, licenses\}
-#   out\TLD-SkyCoop-<version>.zip
+#   out\TLD-COOP-<version>.zip
 # Requires a MelonLoader-installed co-op game copy (for the generated Il2Cpp assemblies), see README.md.
 param(
 	[string]$GameDir = (Join-Path $PSScriptRoot '..\..\player-0.16.13\game'),
@@ -18,14 +18,14 @@ if (!(Test-Path -LiteralPath (Join-Path $GameDir 'MelonLoader\Il2CppAssemblies\A
 	throw "No MelonLoader Il2Cpp assemblies in $GameDir. Install the kit once and start the game to generate them, or pass -GameDir."
 }
 
-foreach ($project in @('SkyCoop\SkyCoop.csproj', 'CoopProfile\CoopProfile.csproj', 'Launcher\Launcher.csproj')) {
+foreach ($project in @('TldCoop\TldCoop.csproj', 'CoopProfile\CoopProfile.csproj', 'Launcher\Launcher.csproj')) {
 	$buildArgs=@('build',(Join-Path $root $project),'-c','Release','-nologo',"-p:GameDir=$GameDir")
 	if($NoRestore){$buildArgs+=@('--no-restore','-p:NuGetAudit=false')}
 	& $Dotnet @buildArgs
 	if ($LASTEXITCODE -ne 0) { throw "Build failed: $project" }
 }
 
-$version = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'SkyCoop\Properties\AssemblyInfo.cs') -Raw), 'AssemblyFileVersion\("([^"]+)"\)').Groups[1].Value
+$version = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'TldCoop\Properties\AssemblyInfo.cs') -Raw), 'AssemblyFileVersion\("([^"]+)"\)').Groups[1].Value
 
 $out = Join-Path $root 'out'
 $kit = Join-Path $out 'friend-kit'
@@ -35,8 +35,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $kit 'files'), (Join-Path $
 
 Copy-Item -Path (Join-Path $root 'kit\*') -Destination $kit
 Copy-Item -Path (Join-Path $root 'licenses\*') -Destination (Join-Path $kit 'licenses')
-Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $kit 'licenses\TLD-SkyCoop-LICENSE.txt')
-Copy-Item -LiteralPath (Join-Path $root 'SkyCoop\bin\Release\netcoreapp6.0\TLD-Coop.dll') -Destination (Join-Path $kit 'files')
+Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $kit 'licenses\TLD-COOP-LICENSE.txt')
+Copy-Item -LiteralPath (Join-Path $root 'TldCoop\bin\Release\netcoreapp6.0\TLD-Coop.dll') -Destination (Join-Path $kit 'files')
 Copy-Item -LiteralPath (Join-Path $root 'CoopProfile\bin\Release\netcoreapp6.0\CoopProfile.dll') -Destination (Join-Path $kit 'files')
 # Steamworks.NET (MIT) as shipped with the game copy's UserLibs by the original kit.
 Copy-Item -LiteralPath (Join-Path $GameDir 'UserLibs\Steamworks.NET.dll') -Destination (Join-Path $kit 'files')
@@ -50,7 +50,7 @@ $manifest = [ordered]@{
 	gameExecutableSHA256 = (Get-FileHash -LiteralPath (Join-Path $GameDir 'tld.exe') -Algorithm SHA256).Hash
 	gameAssemblySHA256 = (Get-FileHash -LiteralPath (Join-Path $GameDir 'GameAssembly.dll') -Algorithm SHA256).Hash
 	files = @($files)
-	source = 'https://github.com/BAndrey0/TLD-SkyCoop'
+	source = 'https://github.com/BAndrey0/TLD-COOP'
 	sourceCommit = "$commit"
 	targetGame = "Steam 26450964 / Survival $gameVersion"
 	localRevision = "survival-$gameVersion-$version"
@@ -63,7 +63,7 @@ $launcher = Join-Path $root 'Launcher\bin\Release\net48\TLD-Coop-Launcher.exe'
 Copy-Item -LiteralPath $launcher -Destination $kit
 Copy-Item -LiteralPath $launcher -Destination $out
 
-$zip = Join-Path $out "TLD-SkyCoop-$version.zip"
+$zip = Join-Path $out "TLD-COOP-$version.zip"
 Compress-Archive -Path $kit -DestinationPath $zip
 Write-Host "Kit: $kit"
 Write-Host "Zip: $zip"

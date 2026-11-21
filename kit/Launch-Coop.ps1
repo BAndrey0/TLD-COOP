@@ -26,7 +26,7 @@ if(!$SkipContentSync -and (Test-Path -LiteralPath $sourceRecord) -and (Test-Path
 }
 Write-Host ("Starting co-op copy: "+$game)
 if(!(Get-Process steam -ErrorAction SilentlyContinue)){throw 'Start Steam and sign in first'}
-foreach($v in @('COOP_QA_MODE','COOP_QA_STEAM_WIRE','COOP_QA_NATIVE_GENDER','COOP_QA_DROP_FIRST_WELCOME','COOP_QA_DROP_FIRST_ACK','COOP_QA_RUN_ID','COOP_QA_REJOIN','COOP_QA_SEED','COOP_QA_STEAM_HOST_SAVE','COOP_QA_QUIT_STYLE','SKYCOOP_BIND_ADDRESS')){[Environment]::SetEnvironmentVariable($v,$null,'Process')}
+foreach($v in @('COOP_QA_MODE','COOP_QA_STEAM_WIRE','COOP_QA_NATIVE_GENDER','COOP_QA_DROP_FIRST_WELCOME','COOP_QA_DROP_FIRST_ACK','COOP_QA_RUN_ID','COOP_QA_REJOIN','COOP_QA_SEED','COOP_QA_STEAM_HOST_SAVE','COOP_QA_QUIT_STYLE','TLD_COOP_BIND_ADDRESS')){[Environment]::SetEnvironmentVariable($v,$null,'Process')}
 $env:SteamAppId='305620';$env:SteamGameId='305620';$env:DOTNET_ROOT=Join-Path $installRoot 'runtime';$env:DOTNET_MULTILEVEL_LOOKUP='0'
 $logs=Join-Path $installRoot 'logs';New-Item -ItemType Directory -Force -Path $logs|Out-Null
 $log=Join-Path $logs ('play-'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')+'.log')
