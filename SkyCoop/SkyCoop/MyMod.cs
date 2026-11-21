@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.35";
+		public const string Version = "0.16.36";
 
 		public const string DownloadLink = null;
 
@@ -6817,6 +6817,24 @@ public class MyMod : MelonMod
 			GearItem component = gameObject.GetComponent<GearItem>();
 			if (component != null)
 			{
+				var evolve = component.m_EvolveItem;
+				if (extra.m_GoalTime == -1 && evolve != null && evolve.m_RequireIndoors &&
+					evolve.m_GearItemToBecome != null && evolve.IsIndoorScene())
+				{
+					int duration = Mathf.RoundToInt(evolve.m_TimeToEvolveGameDays * 1440f);
+					if (duration > 0)
+					{
+						extra.m_DroppedTime = MinutesFromStartServer;
+						extra.m_GoalTime = MinutesFromStartServer + duration;
+						if (iAmHost && MPSaveManager.RequestSpecificGear(Hash, level_guid, Remove: false) is { } saved)
+						{
+							saved.m_Extra.m_DroppedTime = extra.m_DroppedTime;
+							saved.m_Extra.m_GoalTime = extra.m_GoalTime;
+							MPSaveManager.AddGearData(level_guid, Hash, saved);
+						}
+						MelonLogger.Msg($"[Curing] Restored indoor progress clock for {gearName} key={Hash} scene={level_guid}");
+					}
+				}
 				component.m_RolledSpawnChance = true;
 				component.m_StartHasBeenCalled = true;
 				component.m_MarkedForNextUpdateDestroy = false;
@@ -7693,16 +7711,17 @@ public class MyMod : MelonMod
 		int num3 = 0;
 		if (gear.m_EvolveItem != null)
 		{
-			if (gear.m_EvolveItem.CanEvolve())
+			if (gear.m_EvolveItem.CanEvolve() ||
+				gear.m_EvolveItem.m_RequireIndoors && gear.m_EvolveItem.m_GearItemToBecome != null && gear.m_EvolveItem.IsIndoorScene())
 			{
-				int num4 = System.Convert.ToInt32(gear.m_EvolveItem.m_TimeToEvolveGameDays) * 24 * 60;
+				int num4 = Mathf.RoundToInt(gear.m_EvolveItem.m_TimeToEvolveGameDays * 1440f);
 				if (gear.GetGearName() == "GEAR_SCWoodFormB")
 				{
 					num4 = 60;
 				}
 				if (gear.m_EvolveItem.m_TimeSpentEvolvingGameHours != 0f)
 				{
-					num3 = (int)gear.m_EvolveItem.m_TimeSpentEvolvingGameHours * 60;
+					num3 = Mathf.RoundToInt(gear.m_EvolveItem.m_TimeSpentEvolvingGameHours * 60f);
 				}
 				num2 = num4;
 				MelonLogger.Msg("m_TimeSpentEvolvingGameHours " + gear.m_EvolveItem.m_TimeSpentEvolvingGameHours);
@@ -7761,7 +7780,7 @@ public class MyMod : MelonMod
 		}
 		if (num2 != 0 && num2 != -1)
 		{
-			extraDataForDroppedGear.m_GoalTime = MinutesFromStartServer + num2;
+			extraDataForDroppedGear.m_GoalTime = extraDataForDroppedGear.m_DroppedTime + num2;
 		}
 		else
 		{

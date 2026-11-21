@@ -54,18 +54,20 @@ internal static class ScenePlacementSync
             float.IsFinite(Qx) && float.IsFinite(Qy) && float.IsFinite(Qz) && float.IsFinite(Qw);
     }
 
-    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false, bool Removed = false, string Visible = "");
+    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false, bool Removed = false, string Visible = "", string PreviousId = "");
     private sealed class FurniturePlacement
     {
         internal GameObject Object;
         internal Move[] Moves;
-        internal bool Confirmed;
+        internal Dictionary<string, GameObject> Objects = new(StringComparer.Ordinal);
     }
     private static FurniturePlacement placingFurniture;
     private static bool creatingReplica;
     private static float nextFurnitureApply;
+    private static bool furnitureSectorsDirty;
     private static readonly HashSet<string> FurnitureApplyWarnings = new();
     private static readonly Dictionary<string, int> FurnitureCreateAttempts = new();
+    private static readonly Dictionary<string, GameObject> FurnitureAliases = new(StringComparer.Ordinal);
     private sealed record Pot(string Gear, Pose Pose, Pose Slot, string Meshes, string Food, string Mode, int Minutes, bool CanTake, int Liquid, string NativeHover, float Liters = 0f);
     private sealed record GearTransfer(Guid Id, int Requester, string Gear, string Json, float Heat, int TimesHeated);
     private sealed record WaterTransfer(Guid Id, int Requester, float Liters, bool Potable);
@@ -116,6 +118,8 @@ internal static class ScenePlacementSync
     private static string Id(GameObject obj)
     {
         if (obj == null) return "";
+        foreach (var alias in FurnitureAliases)
+            if (alias.Value == obj) return alias.Key;
         var placeable = obj.GetComponent<Placeable>();
         if (placeable != null && !string.IsNullOrEmpty(placeable.m_Guid) && placeable.m_Addressable != null) return placeable.m_Guid;
         string persistent = obj.GetComponent<ObjectGuid>()?.Get() ?? "";
@@ -180,6 +184,7 @@ internal static class ScenePlacementSync
     private static GameObject Find(string id, string anchor = "", PlacementLookup lookup = null)
     {
         if (string.IsNullOrEmpty(id)) return null;
+        if (FurnitureAliases.TryGetValue(id, out var alias) && alias != null) return alias;
         if (id.StartsWith("breakdown-", StringComparison.Ordinal))
         {
             BreakDown match = null;
@@ -222,20 +227,20 @@ internal static class ScenePlacementSync
         (renderer.TryCast<MeshRenderer>() != null || renderer.TryCast<SkinnedMeshRenderer>() != null) &&
         renderer.enabled && !renderer.forceRenderingOff && renderer.gameObject.activeInHierarchy;
 
-    private static string CaptureVisibleContainerMeshes(GameObject obj)
+    private static string CaptureVisibleMeshes(GameObject obj)
     {
-        if (obj.GetComponentInChildren<Container>(true) == null) return "";
         return string.Concat(obj.GetComponentsInChildren<Renderer>(true).Where(VisibleRenderer)
             .Select(renderer => RendererKey(renderer, obj.transform)).Distinct().Take(24));
     }
 
-    private static void RestoreContainerMeshes(GameObject obj, string visible)
+    private static int RestoreFurnitureMeshes(GameObject obj, string visible)
     {
-        if (string.IsNullOrEmpty(visible) || obj.GetComponentInChildren<Container>(true) == null) return;
+        if (string.IsNullOrEmpty(visible)) return 0;
         var renderers = obj.GetComponentsInChildren<Renderer>(true);
-        if (renderers.Any(VisibleRenderer)) return;
+        if (renderers.Any(VisibleRenderer)) return 0;
         var keys = new HashSet<string>(StringComparer.Ordinal);
         for (int i = 0; i + 8 <= visible.Length; i += 8) keys.Add(visible.Substring(i, 8));
+        int restored = 0;
         foreach (var renderer in renderers)
         {
             if (renderer == null || !keys.Contains(RendererKey(renderer, obj.transform))) continue;
@@ -243,7 +248,9 @@ internal static class ScenePlacementSync
             renderer.enabled = true;
             if (renderer.transform != obj.transform && renderer.transform.parent.gameObject.activeInHierarchy)
                 renderer.gameObject.SetActive(true);
+            if (VisibleRenderer(renderer)) restored++;
         }
+        return restored;
     }
 
     private static bool IsFixedBed(GameObject obj) => obj != null &&
@@ -284,7 +291,7 @@ internal static class ScenePlacementSync
         if (id.Length == 0) return null;
         string parent = decoration != null && decoration.DecorationParent != null ? Id(decoration.DecorationParent.gameObject) : "";
         var move = new Move(id, parent, Pose.From(obj.transform), Guid.NewGuid().ToString("N"), 0, 2,
-            Anchor(obj), Anchor(decoration?.DecorationParent?.gameObject), Visible: CaptureVisibleContainerMeshes(obj));
+            Anchor(obj), Anchor(decoration?.DecorationParent?.gameObject), Visible: CaptureVisibleMeshes(obj));
         var placeable = obj.GetComponent<Placeable>();
         if (placeable == null || IsFixedBed(obj) || !Guid.TryParseExact(placeable.m_Addressable?.AssetGUID, "N", out _)) return move;
         var scale = obj.transform.localScale;
@@ -348,6 +355,7 @@ internal static class ScenePlacementSync
                 var bedMove = CaptureFurniture(obj);
                 if (bedMove == null) return;
                 __state = new FurniturePlacement { Object = obj, Moves = new[] { bedMove } };
+                __state.Objects[bedMove.Id] = obj;
                 placingFurniture = __state;
                 return;
             }
@@ -362,12 +370,17 @@ internal static class ScenePlacementSync
             var rootMove = CaptureFurniture(obj);
             if (rootMove != null && !moves.Any(existing => existing.Id == rootMove.Id)) moves.Insert(0, rootMove);
             __state = new FurniturePlacement { Object = obj, Moves = moves.ToArray() };
+            foreach (var move in moves)
+            {
+                var source = rootMove?.Id == move.Id ? obj : Find(move.Id, move.Anchor);
+                if (source != null) __state.Objects[move.Id] = source;
+            }
             placingFurniture = __state;
         }
 
         private static void Postfix(PlayerManager __instance, FurniturePlacement __state, bool __runOriginal)
         {
-            if (!__runOriginal || __state == null || (!__state.Confirmed && __instance.m_ObjectToPlace == __state.Object)) return;
+            if (!__runOriginal || __state == null) return;
             if (__state.Moves.Length == 0)
             {
                 PublishMove(CaptureFurniture(__state.Object));
@@ -375,13 +388,15 @@ internal static class ScenePlacementSync
             }
             foreach (var captured in __state.Moves)
             {
-                var obj = Find(captured.Id, captured.Anchor);
+                __state.Objects.TryGetValue(captured.Id, out var obj);
+                if (obj == null) obj = Find(captured.Id, captured.Anchor);
                 var decoration = obj != null ? obj.GetComponent<DecorationItem>() : null;
                 string parent = decoration?.DecorationParent != null ? Id(decoration.DecorationParent.gameObject) : "";
                 var parentAnchor = Anchor(decoration?.DecorationParent?.gameObject);
                 var pose = obj != null && obj.transform.position != Vector3.zero ? Pose.From(obj.transform) : captured.Pose;
                 var current = obj != null ? CaptureFurniture(obj) : null;
-                PublishMove((current ?? captured) with { Parent = parent, ParentAnchor = parentAnchor, Pose = pose });
+                PublishMove((current ?? captured) with { Parent = parent, ParentAnchor = parentAnchor, Pose = pose,
+                    PreviousId = current != null && current.Id != captured.Id ? captured.Id : "" });
             }
         }
 
@@ -401,15 +416,12 @@ internal static class ScenePlacementSync
 
         private static void Postfix(DecorationItem __instance, bool __0, Move __state)
         {
-            if (placingFurniture != null)
-            {
-                if (__0 && placingFurniture.Object == __instance.gameObject) placingFurniture.Confirmed = true;
-                return;
-            }
+            if (placingFurniture != null) return;
             if (__0 && __state != null)
             {
                 var current = CaptureFurniture(__instance.gameObject);
-                PublishMove(current != null && current.Pose.Position != Vector3.zero ? current : __state);
+                PublishMove(current != null && current.Pose.Position != Vector3.zero
+                    ? current with { PreviousId = current.Id != __state.Id ? __state.Id : "" } : __state);
             }
         }
     }
@@ -417,11 +429,15 @@ internal static class ScenePlacementSync
     [HarmonyPatch(typeof(PlaceableManager), nameof(PlaceableManager.ReturnFromPlayer), new[] { typeof(Placeable) })]
     private static class ReturnCraftedFurniture
     {
-        private static void Postfix(Placeable __0)
+        private static void Prefix(Placeable __0, out string __state) =>
+            __state = InWorld && !creatingReplica && placingFurniture == null && __0 != null ? Id(__0.gameObject) : "";
+
+        private static void Postfix(Placeable __0, string __state)
         {
             if (!InWorld || creatingReplica || placingFurniture != null || PlaceableManager.s_IsDeserializing || __0 == null) return;
             var move = CaptureFurniture(__0.gameObject);
-            if (move != null && !string.IsNullOrEmpty(move.Asset)) PublishMove(move);
+            if (move != null && !string.IsNullOrEmpty(move.Asset))
+                PublishMove(move with { PreviousId = __state != move.Id ? __state : "" });
         }
     }
 
@@ -471,7 +487,7 @@ internal static class ScenePlacementSync
         if (!HasFurniturePose(move) || string.IsNullOrEmpty(move.Id) || move.Id.Length > 100 ||
             (move.Anchor?.Length ?? 0) > 8 || (move.ParentAnchor?.Length ?? 0) > 8 ||
             move.Parent == null || move.Parent.Length > 100 || move.Id == move.Parent || move.Version != 2 ||
-            (move.Visible?.Length ?? 0) > 192 ||
+            (move.Visible?.Length ?? 0) > 192 || (move.PreviousId?.Length ?? 0) > 100 ||
             !Guid.TryParseExact(move.Operation, "N", out _) || !ValidFurnitureAsset(move)) return;
         var moves = GetScene(area);
         string ancestor = move.Parent;
@@ -501,6 +517,15 @@ internal static class ScenePlacementSync
             if (!string.IsNullOrEmpty(move.Anchor))
                 foreach (var old in moves.Values.Where(item => item.Id != move.Id && item.Anchor == move.Anchor))
                     next.Remove(old.Id);
+            Move retired = null;
+            if (move.PreviousId is { Length: > 0 } prior && prior != move.Id && moves.TryGetValue(prior, out var oldMove) &&
+                !oldMove.Removed && oldMove.Asset == move.Asset)
+            {
+                retired = oldMove with { Removed = true, Revision = move.Revision, Parent = "", ParentAnchor = "", Visible = "", PreviousId = "" };
+                next[prior] = retired;
+                foreach (var child in next.Values.Where(item => item.Parent == prior).ToArray())
+                    next[child.Id] = child with { Parent = move.Id, Revision = move.Revision };
+            }
             next[move.Id] = move;
             MPSaveManager.ValidateRootExits();
             if (!MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(next), MPSaveManager.GetSeed())) return;
@@ -510,6 +535,11 @@ internal static class ScenePlacementSync
             AcceptedOperations.Add(move.Operation);
             OperationOrder.Enqueue(move.Operation);
             MelonLoader.MelonLogger.Msg("[Furniture] Saved move " + move.Id + " in " + area + " revision=" + move.Revision);
+            if (retired != null)
+            {
+                ReceiveMove(area, retired);
+                SendToPeers(1, area, JsonSerializer.Serialize(retired));
+            }
             ReceiveMove(area, move);
             SendToPeers(1, area, JsonSerializer.Serialize(move));
         }
@@ -540,6 +570,18 @@ internal static class ScenePlacementSync
          float.IsFinite(move.Sx) && float.IsFinite(move.Sy) && float.IsFinite(move.Sz) &&
          Mathf.Abs(move.Sx) <= 20f && Mathf.Abs(move.Sy) <= 20f && Mathf.Abs(move.Sz) <= 20f);
 
+    private static int QueuedParentDepth(Move move)
+    {
+        int depth = 0;
+        string parent = move.Parent;
+        while (!string.IsNullOrEmpty(parent) && depth < Unapplied.Count && Unapplied.TryGetValue(parent, out var next))
+        {
+            depth++;
+            parent = next.Parent;
+        }
+        return depth;
+    }
+
     private static bool Apply(Move move, PlacementLookup lookup)
     {
         if (PlaceableManager.s_IsDeserializing) return false;
@@ -552,13 +594,32 @@ internal static class ScenePlacementSync
             var activePlayer = GameManager.GetPlayerManagerComponent();
             if (activePlayer != null && (activePlayer.m_ObjectToPlace == obj || activePlayer.m_ObjectToPlaceDecorationItem?.gameObject == obj)) return false;
             var removedDecoration = obj.GetComponent<DecorationItem>();
-            if (removedDecoration != null && obj.activeSelf) removedDecoration.RemoveFromHierarchy();
+            if (removedDecoration != null && obj.activeSelf)
+            {
+                BoxSectorManager.s_Instance?.RemoveDecorationFromSystem(removedDecoration);
+                removedDecoration.RemoveFromHierarchy();
+                furnitureSectorsDirty = true;
+            }
             obj.SetActive(false);
             return true;
         }
         if (obj == null && !string.IsNullOrEmpty(move.Asset) && ValidFurnitureAsset(move))
         {
-            if (move.Parent.Length > 0 && Find(move.Parent, move.ParentAnchor, lookup) == null) return false;
+            var matches = UnityEngine.Object.FindObjectsOfType<Placeable>().Where(candidate =>
+                candidate != null && !candidate.m_Invalidated && candidate.m_Addressable?.AssetGUID == move.Asset &&
+                PlaceableManager.GetPlacementState(candidate) != PlacementState.Removed &&
+                !LatestRevision.ContainsKey(candidate.m_Guid ?? "") &&
+                (candidate.transform.position - move.Pose.Position).sqrMagnitude <= .0001f &&
+                Mathf.Abs(Quaternion.Dot(candidate.transform.rotation, move.Pose.Rotation)) >= .9999f).Take(2).ToArray();
+            if (matches.Length == 1 && !FurnitureAliases.Values.Any(item => item == matches[0].gameObject))
+            {
+                obj = matches[0].gameObject;
+                FurnitureAliases[move.Id] = obj;
+                MelonLoader.MelonLogger.Msg($"[Furniture] Reused {obj.name} native={matches[0].m_Guid} saved={move.Id}");
+            }
+        }
+        if (obj == null && !string.IsNullOrEmpty(move.Asset) && ValidFurnitureAsset(move))
+        {
             var saved = new PlaceableSaveData
             {
                 m_Addressable = new AssetReferencePlaceable(move.Asset), m_Name = move.AssetName,
@@ -587,26 +648,41 @@ internal static class ScenePlacementSync
         }
         if (obj == null) return false;
         var placeable = obj.GetComponent<Placeable>();
-        if (placeable != null && (placeable.m_Invalidated || PlaceableManager.GetPlacementState(placeable) == PlacementState.Removed)) return true;
+        if (placeable != null && (placeable.m_Invalidated || PlaceableManager.GetPlacementState(placeable) == PlacementState.Removed)) return false;
         bool fixedBed = IsFixedBed(obj);
         if (fixedBed && BedRest.IsOccupied(obj.GetComponentInChildren<Bed>(true))) return false;
         var player = GameManager.GetPlayerManagerComponent();
         if (player != null && player.m_ObjectToPlace == obj) return false;
-        if (!fixedBed && move.Parent.Length > 0 && Unapplied.ContainsKey(move.Parent)) return false;
         var decoration = obj.GetComponent<DecorationItem>();
         if (decoration == null && placeable == null) return true;
+        GameObject parent = null;
+        bool awaitingParent = false;
         if (decoration != null && !fixedBed)
         {
-            var parent = Find(move.Parent, move.ParentAnchor, lookup);
-            if (move.Parent.Length > 0 && parent == null) return false;
-            var parentDecoration = parent != null ? parent.GetComponent<DecorationItem>() : null;
-            if (parentDecoration != decoration.DecorationParent &&
-                (parent == null || !parent.transform.IsChildOf(obj.transform)))
-                decoration.SetParent(parentDecoration);
+            parent = Find(move.Parent, move.ParentAnchor, lookup);
+            awaitingParent = move.Parent.Length > 0 && (parent == null || !parent.activeInHierarchy);
         }
+        var sectors = BoxSectorManager.s_Instance;
+        bool changed = (obj.transform.position - move.Pose.Position).sqrMagnitude > .000001f ||
+            Mathf.Abs(Quaternion.Dot(obj.transform.rotation, move.Pose.Rotation)) < .99999f;
+        var parentDecoration = parent != null ? parent.GetComponent<DecorationItem>() : null;
+        bool changeParent = decoration != null && !fixedBed &&
+            (awaitingParent ? decoration.DecorationParent != null && !decoration.DecorationParent.gameObject.activeInHierarchy :
+                parentDecoration != decoration.DecorationParent && (parent == null || !parent.transform.IsChildOf(obj.transform)));
+        bool repairSectors = changed || changeParent || (!awaitingParent &&
+            !obj.GetComponentsInChildren<Renderer>(true).Any(VisibleRenderer));
+        if (repairSectors && sectors != null && decoration != null)
+            sectors.RemoveDecorationFromSystem(decoration);
+        if (changeParent) decoration.SetParent(awaitingParent ? null : parentDecoration);
         obj.transform.SetPositionAndRotation(move.Pose.Position, move.Pose.Rotation);
-        RestoreContainerMeshes(obj, move.Visible);
-        return true;
+        if (repairSectors && sectors != null && decoration != null)
+        {
+            sectors.MaybeAddDecorationIntoSystem(decoration);
+            furnitureSectorsDirty = true;
+        }
+        int restored = RestoreFurnitureMeshes(obj, move.Visible);
+        if (restored > 0) MelonLoader.MelonLogger.Msg($"[Furniture] Restored {restored} mesh renderers for {obj.name} id={move.Id}");
+        return !awaitingParent;
     }
 
     internal static bool ProbeFurniture()
@@ -623,6 +699,40 @@ internal static class ScenePlacementSync
                 Find(move.Id, move.Anchor, lookup) == obj && Apply(move, lookup);
         }
         return false;
+    }
+
+    internal static void ProbeFurnitureInCurrentRoom()
+    {
+        var lookup = new PlacementLookup();
+        var decorations = UnityEngine.Object.FindObjectsOfType<DecorationItem>();
+        foreach (string kind in new[] { "bed", "furnitureworkbench", "container" })
+        {
+            GameObject obj = decorations.Where(item => item != null && item.gameObject.activeInHierarchy)
+                .Select(item => item.gameObject).FirstOrDefault(candidate =>
+                    (kind == "bed" ? IsFixedBed(candidate) :
+                    kind == "container" ? candidate.GetComponentInChildren<Container>(true) != null &&
+                        !candidate.name.Contains("furnitureworkbench", StringComparison.OrdinalIgnoreCase) :
+                    candidate.name.Contains(kind, StringComparison.OrdinalIgnoreCase)) &&
+                    candidate.GetComponentsInChildren<Renderer>(true).Any(VisibleRenderer));
+            var move = CaptureFurniture(obj);
+            if (move == null)
+            {
+                MelonLoader.MelonLogger.Warning($"[Furniture room probe] SKIP {kind}: no visible fixture");
+                continue;
+            }
+            var renderers = obj.GetComponentsInChildren<Renderer>(true).Where(VisibleRenderer).ToArray();
+            foreach (var renderer in renderers) renderer.forceRenderingOff = true;
+            int countBefore = decorations.Count(item => item != null);
+            var moved = move with { Pose = move.Pose with { X = move.Pose.X + .1f } };
+            bool applied = Apply(moved, lookup);
+            BoxSectorManager.s_Instance?.UpdateSectors();
+            bool atTarget = (obj.transform.position - moved.Pose.Position).sqrMagnitude < .0001f;
+            bool visible = renderers.Any(VisibleRenderer);
+            int countAfter = UnityEngine.Object.FindObjectsOfType<DecorationItem>().Length;
+            MelonLoader.MelonLogger.Msg($"[Furniture room probe] {kind} applied={applied} target={atTarget} visible={visible} sameCount={countBefore == countAfter} id={move.Id}");
+            foreach (var renderer in renderers) renderer.forceRenderingOff = false;
+            Apply(move, lookup);
+        }
     }
 
     [HarmonyPatch]
@@ -1343,6 +1453,7 @@ internal static class ScenePlacementSync
             LatestRevision.Clear();
             FurnitureApplyWarnings.Clear();
             FurnitureCreateAttempts.Clear();
+            FurnitureAliases.Clear();
             nextFurnitureApply = 0f;
             scene = area;
             ScheduleFurnitureReplay();
@@ -1360,6 +1471,7 @@ internal static class ScenePlacementSync
         }
         if (area == null) return;
         float now = Time.realtimeSinceStartup;
+        bool reportReplay = false;
         if (MyMod.iAmHost && furnitureReplays > 0 && now >= replayFurnitureAt && !PlaceableManager.s_IsDeserializing)
         {
             furnitureReplays--;
@@ -1372,6 +1484,8 @@ internal static class ScenePlacementSync
                 Unapplied[move.Id] = move;
             }
             MelonLoader.MelonLogger.Msg($"[Furniture] Replay scene={area} saved={savedFurniture.Count} pending={Unapplied.Count}");
+            nextFurnitureApply = 0f;
+            reportReplay = true;
         }
         foreach (var pair in RemotePots.ToArray())
             if (pair.Value.Expires <= now) ReceivePot(area, pair.Key.Owner, pair.Key.Key, null);
@@ -1379,8 +1493,30 @@ internal static class ScenePlacementSync
         {
             nextFurnitureApply = now + .5f;
             var lookup = new PlacementLookup();
-            foreach (var pair in Unapplied.ToArray())
-                if (Apply(pair.Value, lookup)) Unapplied.Remove(pair.Key);
+            foreach (var pair in Unapplied.OrderBy(pair => QueuedParentDepth(pair.Value)).ToArray())
+            {
+                try
+                {
+                    if (Apply(pair.Value, lookup)) Unapplied.Remove(pair.Key);
+                }
+                catch (Exception ex)
+                {
+                    if (FurnitureApplyWarnings.Add(pair.Key))
+                        MelonLoader.MelonLogger.Warning($"[Furniture] Apply failed id={pair.Key} scene={area} {ex.Message}");
+                }
+            }
+            if (furnitureSectorsDirty)
+            {
+                BoxSectorManager.s_Instance?.UpdateSectors();
+                furnitureSectorsDirty = false;
+            }
+            if (reportReplay)
+            {
+                var pending = Unapplied.Values.Where(move => !move.Removed).ToArray();
+                MelonLoader.MelonLogger.Msg($"[Furniture] Replay result scene={area} unresolved={pending.Length} waitingOnRemovals={Unapplied.Count - pending.Length}");
+                foreach (var move in pending.Take(8))
+                    MelonLoader.MelonLogger.Msg($"[Furniture] Waiting id={move.Id} asset={move.AssetName} parent={move.Parent}");
+            }
         }
         TickPots();
         if (MyMod.iAmHost || now < nextRequest) return;
@@ -1397,6 +1533,17 @@ internal static class ScenePlacementSync
         furnitureReplays = 2;
         replayFurnitureAt = Time.realtimeSinceStartup + 1f;
         nextRequest = 0;
+    }
+
+    [HarmonyPatch(typeof(PlaceableManager), nameof(PlaceableManager.DeserializeScenePlacements))]
+    private static class ReplayAfterNativeFurnitureLoad
+    {
+        private static void Postfix()
+        {
+            LatestRevision.Clear();
+            FurnitureAliases.Clear();
+            ScheduleFurnitureReplay();
+        }
     }
 
     internal static void ReceiveClient(int from, Packet packet)

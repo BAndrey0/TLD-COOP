@@ -3526,16 +3526,17 @@ public class Pathes
 					__result = text3 + component2.m_LocalizedDisplayName + text4;
 					return;
 				}
+				bool russian = RussianDropHints();
 				if (KeyboardUtilities.InputManager.GetKey(KeyCode.LeftShift))
 				{
 					string text5 = DropTimeFormat(MyMod.MinutesFromStartServer - component2.m_Extra.m_DroppedTime);
 					if (string.IsNullOrEmpty(text5))
 					{
-						__result = component2.m_LocalizedDisplayName + "\nDropped just now";
+						__result = component2.m_LocalizedDisplayName + (russian ? "\nОставлено только что" : "\nDropped just now");
 					}
 					else
 					{
-						__result = component2.m_LocalizedDisplayName + "\nDropped " + text5 + " ago";
+						__result = component2.m_LocalizedDisplayName + (russian ? "\nОставлено " + text5 + " назад" : "\nDropped " + text5 + " ago");
 					}
 					return;
 				}
@@ -3558,7 +3559,7 @@ public class Pathes
 					__result = GetSnareHoverString(component2);
 					return;
 				}
-				string text7 = " " + text6 + " by " + component2.m_Extra.m_Dropper;
+				string text7 = russian ? "Оставил: " + component2.m_Extra.m_Dropper : " " + text6 + " by " + component2.m_Extra.m_Dropper;
 				if (component2.m_Extra.m_GoalTime == 0)
 				{
 					if (text7 != "")
@@ -3572,7 +3573,7 @@ public class Pathes
 				}
 				else if (component2.m_Extra.m_GoalTime == -1)
 				{
-					__result = component2.m_LocalizedDisplayName + "\nCannot be cured here" + text7;
+					__result = component2.m_LocalizedDisplayName + (russian ? "\nЗдесь не просушивается · " : "\nCannot be cured here") + text7;
 				}
 				else
 				{
@@ -7582,6 +7583,8 @@ public class Pathes
 	public static string DropTimeFormat(int minutesLeft)
 	{
 		int num = minutesLeft / 60;
+		if (RussianDropHints())
+			return num >= 24 ? $"{num / 24} дн." : num >= 1 ? $"{num} ч." : minutesLeft >= 1 ? $"{minutesLeft} мин." : "";
 		if (num >= 24)
 		{
 			int num2 = num / 24;
@@ -7616,6 +7619,12 @@ public class Pathes
 		string dropper = DGD.m_Extra.m_Dropper;
 		string text = "Dropped";
 		string text2 = DropTimeFormat(DGD.m_Extra.m_GoalTime - MyMod.MinutesFromStartServer);
+		if (RussianDropHints())
+		{
+			string status = DGD.m_Extra.m_Variant == 0 ? "" :
+				string.IsNullOrEmpty(text2) ? "Топливо закончилось · " : $"Топлива осталось на {text2} · ";
+			return localizedDisplayName + "\n" + status + "Оставил: " + dropper;
+		}
 		string text3 = "Fuel left for " + text2;
 		if (DGD.m_Extra.m_Variant != 0)
 		{
@@ -7633,6 +7642,12 @@ public class Pathes
 		string text = "Dropped";
 		int num = MyMod.MinutesFromStartServer - DGD.m_Extra.m_DroppedTime;
 		string text2 = DropTimeFormat(MyMod.TimeToDry("GEAR_Snare") - num + 1);
+		if (RussianDropHints())
+		{
+			string status = DGD.m_Extra.m_Variant == 0 ? "" : DGD.m_Extra.m_GoalTime == -1 ?
+				"Здесь силок не сработает · " : string.IsNullOrEmpty(text2) ? "Силок установлен · " : $"До проверки силка {text2} · ";
+			return localizedDisplayName + "\n" + status + "Оставил: " + dropper;
+		}
 		if (DGD.m_Extra.m_Variant != 0)
 		{
 			text = "Setup";
@@ -7653,6 +7668,9 @@ public class Pathes
 		return localizedDisplayName + "\n" + text + " by " + dropper;
 	}
 
+	private static bool RussianDropHints() => string.Equals(Localization.Language, "Russian", System.StringComparison.OrdinalIgnoreCase) ||
+		Localization.Language == "Русский";
+
 	public static string GetCureableHoverString(Comps.DroppedGearDummy DGD, string Name)
 	{
 		string localizedDisplayName = DGD.m_LocalizedDisplayName;
@@ -7660,10 +7678,12 @@ public class Pathes
 		string text = "dropped";
 		int num = MyMod.MinutesFromStartServer - DGD.m_Extra.m_DroppedTime;
 		int total = MyMod.TimeToDry(Name);
-		bool russian = string.Equals(Localization.Language, "Russian", System.StringComparison.OrdinalIgnoreCase) ||
-			Localization.Language == "Русский";
-		if (russian && total > 0 && !Name.Contains("GEAR_SCWoodFormB"))
-			return localizedDisplayName + "\nПросушено " + Mathf.RoundToInt(100f * Mathf.Clamp01((float)num / total)) + "%";
+		bool russian = RussianDropHints();
+		if (russian && total > 0)
+		{
+			string status = Name.Contains("GEAR_SCWoodFormB") ? "Остыло" : "Просушено";
+			return localizedDisplayName + "\n" + status + " " + Mathf.RoundToInt(100f * Mathf.Clamp01((float)num / total)) + "%";
+		}
 		string text2 = DropTimeFormat(total - num + 1);
 		string text3 = "Cured";
 		string text4 = "Cures in";

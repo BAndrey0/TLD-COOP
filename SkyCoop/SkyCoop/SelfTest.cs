@@ -739,7 +739,7 @@ public static class SelfTest
 	private static void CheckFurnitureCrash()
 	{
 		if (furnitureTestFinished) return;
-		if (furnitureReadyAt == 0f) furnitureReadyAt = Time.realtimeSinceStartup + 3f;
+		if (furnitureReadyAt == 0f) furnitureReadyAt = Time.realtimeSinceStartup + 8f;
 		if (Time.realtimeSinceStartup < furnitureReadyAt) return;
 		if (MyMod.level_name == "RuralRegion")
 		{
@@ -752,6 +752,8 @@ public static class SelfTest
 		foreach (var door in UnityEngine.Object.FindObjectsOfType<LoadScene>())
 		{
 			if (door == null || door.GetSceneToLoad() != "RuralRegion") continue;
+			ScenePlacementSync.ProbeFurnitureInCurrentRoom();
+			ProbeCuringDrop();
 			furnitureExited = true;
 			furnitureReadyAt = Time.realtimeSinceStartup + 8f;
 			MelonLogger.Msg("[Furniture crash probe] Exiting " + MyMod.level_name + " through " + door.name);
@@ -761,6 +763,29 @@ public static class SelfTest
 		furnitureTestFinished = true;
 		MelonLogger.Warning("[Furniture crash probe] No exit to RuralRegion in " + MyMod.level_name);
 		Application.Quit();
+	}
+
+	private static void ProbeCuringDrop()
+	{
+		var prefab = MyMod.GetGearItemObject("GEAR_Gut");
+		if (prefab == null) return;
+		var position = GameManager.GetPlayerTransform().position + Vector3.forward * .7f;
+		var gear = UnityEngine.Object.Instantiate(prefab, position, Quaternion.identity).GetComponent<GearItem>();
+		if (gear?.m_EvolveItem == null) return;
+		var existing = new HashSet<int>(MyMod.DroppedGearsObjs.Keys);
+		bool nativeReady = gear.m_EvolveItem.CanEvolve();
+		gear.m_EvolveItem.m_TimeSpentEvolvingGameHours = 1.25f;
+		MyMod.SendDropItem(gear, samepose: true);
+		foreach (var item in MyMod.DroppedGearsObjs)
+		{
+			if (existing.Contains(item.Key)) continue;
+			var extra = item.Value.GetComponent<Comps.DroppedGearDummy>()?.m_Extra;
+			if (extra?.m_GearName != "GEAR_Gut") continue;
+			int progress = MyMod.MinutesFromStartServer - extra.m_DroppedTime;
+			MelonLogger.Msg($"[Curing probe] nativeAtDrop={nativeReady} active={extra.m_GoalTime > 0} progressMinutes={progress}");
+			return;
+		}
+		MelonLogger.Warning("[Curing probe] No replica published");
 	}
 
 	private static void CheckDroppedMove()
