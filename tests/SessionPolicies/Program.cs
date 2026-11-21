@@ -8,6 +8,14 @@ static class Program
  static void Main()
  {
   MyMod.sendMyPosition = true;
+  Check(!DroppedMovePolicy.ReturnPreviewOnRestore(true, true), "Native restore during confirmation must not cancel the pending move");
+  Check(DroppedMovePolicy.ReturnPreviewOnRestore(false, true), "Cancelling a preview must restore its source");
+  Check(!DroppedMovePolicy.ReturnPreviewOnRestore(false, false), "Native furniture is not a dropped preview");
+  Check(DroppedMovePolicy.Decide(true, true, true, false, false) == DroppedMovePolicy.Result.Apply, "A current item moves in place");
+  Check(DroppedMovePolicy.Decide(true, true, false, false, false) == DroppedMovePolicy.Result.Conflict, "A second player cannot commit against a stale location");
+  Check(DroppedMovePolicy.Decide(true, false, true, false, false) == DroppedMovePolicy.Result.Missing, "A visual-only item cannot create a new inventory record");
+  Check(DroppedMovePolicy.Decide(true, true, true, true, true) == DroppedMovePolicy.Result.Apply, "Changing a bedroll state at the same position must publish");
+  Check(DroppedMovePolicy.Decide(true, true, true, true, false) == DroppedMovePolicy.Result.Unchanged, "An unchanged confirmation must not publish again");
   const string previousWorld = "a1111111111111111111111111111111";
   const string newWorld = "b2222222222222222222222222222222";
   Check(WorldSaveMatch.CanResume(previousWorld, -42, previousWorld, "Renamed"), "The same world must resume after the guest renames its slot");

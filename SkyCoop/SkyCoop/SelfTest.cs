@@ -27,6 +27,8 @@ public static class SelfTest
 	private static float previewSince;
 	private static bool rendered;
 	private static bool FurnitureCrashTest => Environment.GetEnvironmentVariable("SKYCOOP_FURNITURE_CRASH_TEST") == "1";
+	private static bool DropMoveTest => Environment.GetEnvironmentVariable("SKYCOOP_DROP_MOVE_TEST") == "1";
+	private static bool mapleMovePassed;
 	private static float furnitureReadyAt;
 	private static bool furnitureExited;
 	private static bool furnitureTestFinished;
@@ -575,7 +577,7 @@ public static class SelfTest
 	public static void Tick()
 	{
 		if (Environment.GetEnvironmentVariable("SKYCOOP_INTERACTION_PROBE") == "1") return;
-		if ((ModelOnly || FurnitureCrashTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started &&
+		if ((ModelOnly || FurnitureCrashTest || DropMoveTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started &&
 			GameCompat.Panel<Panel_Boot>() is { } boot)
 		{
 			boot.m_HoldLoadingUntilInputGiven = false;
@@ -585,6 +587,12 @@ public static class SelfTest
 		{
 			Application.runInBackground = true;
 			if (started && MyMod.iAmHost && GearCatalogIndex.InWorld) CheckFurnitureCrash();
+		}
+		if (DropMoveTest && started && MyMod.iAmHost && GearCatalogIndex.InWorld && !furnitureTestFinished)
+		{
+			Application.runInBackground = true;
+			if (furnitureReadyAt == 0f) furnitureReadyAt = Time.realtimeSinceStartup + 3f;
+			if (Time.realtimeSinceStartup >= furnitureReadyAt) CheckDroppedMove();
 		}
 		if(Environment.GetEnvironmentVariable("SKYCOOP_CATALOG_PROBE")=="1")
 		{
@@ -677,7 +685,7 @@ public static class SelfTest
 			}
 		}
 		CheckAvatarInWorld();
-		if ((FurnitureCrashTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started)
+		if ((FurnitureCrashTest || DropMoveTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started)
 		{
 			MoviePlayer.m_HasIntroPlayedForMainMenu = true;
 			if (GameCompat.Panel<Panel_MainMenu>() is { } menu) menu.m_PlayedIntroMovie = true;
@@ -753,5 +761,52 @@ public static class SelfTest
 		furnitureTestFinished = true;
 		MelonLogger.Warning("[Furniture crash probe] No exit to RuralRegion in " + MyMod.level_name);
 		Application.Quit();
+	}
+
+	private static void CheckDroppedMove()
+	{
+		try
+		{
+			var player = GameManager.GetPlayerManagerComponent();
+			if (InterfaceManager.IsOverlayActiveImmediate()) InterfaceManager.CloseOverlaysDueToSceneLoad();
+			var options = GameCompat.Panel<Panel_OptionsMenu>();
+			if (options != null && options.isActiveAndEnabled) options.Enable(false);
+			if (!GearPlacementSync.CanInteract(player))
+			{
+				foreach (var panel in UnityEngine.Object.FindObjectsOfType<Panel_Base>())
+					if (panel != null && panel.isActiveAndEnabled) MelonLogger.Msg("[Drop move probe] Active panel " + panel.name);
+				throw new InvalidOperationException($"Player input unavailable mode={player?.GetControlMode()} overlay={InterfaceManager.IsOverlayActiveImmediate()}");
+			}
+			string name = mapleMovePassed ? "GEAR_BedRoll" : "GEAR_MapleSapling";
+			var original = GameManager.GetPlayerTransform().position + Vector3.forward * (mapleMovePassed ? .9f : .5f);
+			var target = original + Vector3.right * .6f;
+			ResourceIndependent.SpawnGear(name, MyMod.level_guid, original, Quaternion.identity,
+				Variant: name == "GEAR_BedRoll" ? 1 : 0, DroppedName: "probe");
+			int key = Shared.GetVectorHash(original) + Shared.GetQuaternionHash(Quaternion.identity) + Shared.StableHash(MyMod.level_guid);
+			var source = MyMod.DroppedGearsObjs[key];
+			MyMod.PlaceDroppedGear(source);
+			if (player.m_ObjectToPlace == null || source.activeSelf) throw new InvalidOperationException(name + " preview did not open");
+			player.CancelPlacementMode();
+			if (!source.activeSelf || GearPlacementSync.Busy) throw new InvalidOperationException(name + " did not restore source on cancel");
+			MyMod.PlaceDroppedGear(source);
+			if (player.m_ObjectToPlace == null) throw new InvalidOperationException(name + " preview did not reopen");
+			int count = MyMod.DroppedGearsObjs.Count;
+			player.m_ObjectToPlace.transform.position = target;
+			player.PlaceMeshInWorld();
+			if (player.IsInPlacementMode()) player.ExitMeshPlacement();
+			var saved = MPSaveManager.LoadDropVisual(MyMod.level_guid)[key];
+			if (MyMod.DroppedGearsObjs.Count != count || Vector3.Distance(saved.m_Position, target) > .05f)
+				throw new InvalidOperationException(name + " did not commit the original key at the target");
+			MelonLogger.Msg("[Drop move probe] PASS " + name + " preview, cancel and host commit");
+			furnitureTestFinished = mapleMovePassed;
+			mapleMovePassed = true;
+			furnitureReadyAt = Time.realtimeSinceStartup + 1f;
+		}
+		catch (Exception failure)
+		{
+			furnitureTestFinished = true;
+			MelonLogger.Error("[Drop move probe] FAIL " + failure);
+		}
+		if (furnitureTestFinished) Application.Quit();
 	}
 }

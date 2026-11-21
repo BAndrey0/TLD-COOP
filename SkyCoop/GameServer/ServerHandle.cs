@@ -33,9 +33,9 @@ internal class ServerHandle
 		}
 		else if (text2 != "RCON")
 		{
-			if (text2 != "0.16.34")
+			if (text2 != "0.16.35")
 			{
-				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.34");
+				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.35");
 				Shared.SendMessageToChat(new DataStr.MultiplayerChatMessage
 				{
 					m_Type = 0,
@@ -1059,7 +1059,8 @@ internal class ServerHandle
 		}
 		Shared.ModifyDynamicGears(text);
 		Dictionary<int, DataStr.DroppedGearItemDataPacket> dictionary5 = MPSaveManager.LoadDropVisual(text);
-		if (MPSaveManager.LoadDropData(text) == null || dictionary5 == null)
+		var savedDrops = MPSaveManager.LoadDropData(text);
+		if (savedDrops == null || dictionary5 == null)
 		{
 			Log("Requested scene has no drops " + text);
 			ServerSend.LOADINGSCENEDROPSDONE(_fromClient, text);
@@ -1069,6 +1070,7 @@ internal class ServerHandle
 			int num = 0;
 			foreach (KeyValuePair<int, DataStr.DroppedGearItemDataPacket> item7 in dictionary5)
 			{
+				if (!savedDrops.ContainsKey(item7.Key)) continue;
 				num++;
 				ServerSend.DROPITEM(0, item7.Value, toEveryOne: false, _fromClient);
 			}

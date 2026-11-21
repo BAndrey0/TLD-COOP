@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.34";
+		public const string Version = "0.16.35";
 
 		public const string DownloadLink = null;
 
@@ -1169,8 +1169,9 @@ public class MyMod : MelonMod
 		}
 		else
 		{
+			component.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
+			component.m_MarkedForNextUpdateDestroy = false;
 			ThrownFlareSync.ApplyPickupBurn(component, extra);
-			component.PlayPickUpClip();
 			if (!GearPlacementSync.Start(GameManager.GetPlayerManagerComponent(), gameObject, jData.m_Hash)) return;
 		}
 		PatchBookReadTime(component);
@@ -6728,6 +6729,7 @@ public class MyMod : MelonMod
 			StartServerAfterSelectSave = false;
 			Shared.HostAServer(PortsToHostOn);
 		}
+		ScenePlacementSync.ScheduleFurnitureReplay();
 	}
 
 	public static void DedicatedServerUpdate()
@@ -11106,14 +11108,16 @@ public class MyMod : MelonMod
 		MelonLogger.Msg(System.ConsoleColor.Blue, "Trying to load drops for scene " + text);
 		Shared.ModifyDynamicGears(text);
 		System.Collections.Generic.Dictionary<int, DataStr.DroppedGearItemDataPacket> dictionary = MPSaveManager.LoadDropVisual(text);
-		if (MPSaveManager.LoadDropData(text) == null || dictionary == null)
+		var data = MPSaveManager.LoadDropData(text);
+		if (data == null || dictionary == null)
 		{
 			return;
 		}
 		foreach (System.Collections.Generic.KeyValuePair<int, DataStr.DroppedGearItemDataPacket> item in dictionary)
 		{
-			Shared.FakeDropItem(item.Value, JustLoad: true);
+			if (data.ContainsKey(item.Key)) Shared.FakeDropItem(item.Value, JustLoad: true);
 		}
+		GearPlacementSync.HideOverlappingNativeBedrolls();
 	}
 
 	public static void SetFixedSpawn()

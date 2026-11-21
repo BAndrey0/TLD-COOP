@@ -14,7 +14,11 @@ internal static class GearPlacementSync
     private sealed record Pose(float X, float Y, float Z, float A, float B, float C, float D)
     {
         internal static Pose From(Transform t) => From(t.position, t.rotation);
-        internal static Pose From(Vector3 p, Quaternion q) => new(p.x, p.y, p.z, q.x, q.y, q.z, q.w);
+        internal static Pose From(Vector3 p, Quaternion q)
+        {
+            q = q.normalized;
+            return new(p.x, p.y, p.z, q.x, q.y, q.z, q.w);
+        }
         internal Vector3 Position => new(X, Y, Z);
         internal Quaternion Rotation => new(A, B, C, D);
         internal bool Valid => float.IsFinite(Position.sqrMagnitude) &&
@@ -36,13 +40,28 @@ internal static class GearPlacementSync
     }
 
     private static Preview preview;
+    private static GameObject confirming;
+    private static Pose confirmedPose;
     internal static bool Busy => preview != null;
+    internal static bool IsConfirming(GameObject obj) => obj != null && confirming == obj;
+    internal static void BeginConfirmation(GameObject obj)
+    {
+        confirming = obj;
+        confirmedPose = obj != null ? Pose.From(obj.transform) : null;
+    }
+    internal static void EndConfirmation(GameObject obj)
+    {
+        if (confirming != obj) return;
+        confirming = null;
+        confirmedPose = null;
+    }
 
     internal static bool Request(Comps.DroppedGearDummy dummy)
     {
         if (preview != null || dummy == null) return false;
         preview = new Preview { Scene = MyMod.level_guid, Key = dummy.m_SearchKey, Source = dummy.gameObject,
             Original = Pose.From(dummy.transform), Expires = Time.realtimeSinceStartup + 12f };
+        MelonLogger.Msg($"[Drop move] Requested {dummy.name} scene={preview.Scene} key={preview.Key} original={preview.Original.Position}");
         return true;
     }
 
@@ -70,6 +89,26 @@ internal static class GearPlacementSync
         return slice.m_Last ? preview.Json : null;
     }
 
+    internal static void HideOverlappingNativeBedrolls()
+    {
+        foreach (var bed in UnityEngine.Object.FindObjectsOfType<Bed>())
+        {
+            if (bed == null || bed.m_Bedroll == null || bed.m_BedRollState != BedRollState.Placed ||
+                bed.GetComponent<Comps.FakeBedDummy>() != null || bed.GetComponent<Comps.DroppedGearDummy>() != null) continue;
+            var gear = bed.GetComponent<GearItem>();
+            if (gear == null || gear.m_InPlayerInventory) continue;
+            foreach (var replica in MyMod.DroppedGearsObjs.Values)
+            {
+                if (replica == null || replica.GetComponent<Comps.FakeBed>() == null ||
+                    !string.Equals(MyMod.CloneTrimer(replica.name), gear.GetGearName(), StringComparison.OrdinalIgnoreCase) ||
+                    !SamePose(Pose.From(replica.transform), Pose.From(bed.transform))) continue;
+                bed.gameObject.SetActive(false);
+                MelonLogger.Msg("[Drop sync] Hid overlapping native bedroll in " + MyMod.level_guid);
+                break;
+            }
+        }
+    }
+
     internal static bool Start(PlayerManager player, GameObject obj, int key)
     {
         if (!Expects(key) || preview.Source == null || !CanInteract(player))
@@ -81,11 +120,15 @@ internal static class GearPlacementSync
         var current = preview;
         current.Item = obj;
         obj.transform.SetPositionAndRotation(current.Original.Position, current.Original.Rotation);
-        if (player.StartPlaceMesh(obj, PlaceMeshFlags.None))
+        obj.SetActive(true);
+        bool started = player.StartPlaceMesh(obj, PlaceMeshFlags.None);
+        if (started || player.m_ObjectToPlace == obj && player.IsInPlacementMode())
         {
             current.Source.SetActive(false);
+            MelonLogger.Msg($"[Drop move] Preview key={key} mode={player.GetControlMode()}");
             return true;
         }
+        MelonLogger.Warning("[Drop move] Native placement declined " + obj.name + " key=" + key);
         End();
         UnityEngine.Object.Destroy(obj);
         return false;
@@ -93,22 +136,30 @@ internal static class GearPlacementSync
 
     internal static bool CanInteract(PlayerManager player) => player != null && !player.IsInPlacementMode() &&
         !player.IsInspectModeActive() && player.GetControlMode() is PlayerControlMode.Normal or PlayerControlMode.SafehouseCustomization &&
-        !InterfaceManager.IsOverlayActiveImmediate();
+        !InterfaceManager.DetermineIfOverlayIsActiveInternal(checkPopupBaseActive: false) &&
+        !InterfaceManager.IsPanelEnabled<Panel_Confirmation>();
 
     internal static bool Finish(GameObject obj, bool placed)
     {
         if (preview == null || preview.Item != obj) return false;
+        if (!placed && !DroppedMovePolicy.ReturnPreviewOnRestore(IsConfirming(obj), isPreview: true)) return true;
         var current = preview;
         current.Item = null;
         if (placed)
         {
             var bed = obj.GetComponent<GearItem>()?.m_Bed;
             int variant = bed?.m_Bedroll != null ? (bed.m_BedRollState == BedRollState.Placed ? 1 : 0) : -1;
-            current.Requested = new Move(current.Original, Pose.From(obj.transform), variant, Guid.NewGuid());
+            var pose = Pose.From(obj.transform);
+            if (IsConfirming(obj) && SamePose(pose, current.Original)) pose = confirmedPose;
+            current.Requested = new Move(current.Original, pose, variant, Guid.NewGuid());
             current.Expires = Time.realtimeSinceStartup + 12f;
             Send(current);
         }
-        else End();
+        else
+        {
+            MelonLogger.Msg($"[Drop move] Cancelled scene={current.Scene} key={current.Key}");
+            End();
+        }
         UnityEngine.Object.Destroy(obj);
         return true;
     }
@@ -164,8 +215,10 @@ internal static class GearPlacementSync
         if (visuals != null && visuals.TryGetValue(key, out var visual) && visual?.m_Extra != null && data != null)
         {
             var current = Pose.From(visual.m_Position, visual.m_Rotation);
-            if (SamePose(current, move.Original) && (!SamePose(current, move.Target) ||
-                move.BedVariant >= 0 && move.BedVariant != visual.m_Extra.m_Variant))
+            var decision = DroppedMovePolicy.Decide(hasVisual: true, hasData: true,
+                SamePose(current, move.Original), SamePose(current, move.Target),
+                move.BedVariant >= 0 && move.BedVariant != visual.m_Extra.m_Variant);
+            if (decision == DroppedMovePolicy.Result.Apply)
             {
                 visual.m_Position = move.Target.Position;
                 visual.m_Rotation = move.Target.Rotation;
@@ -181,14 +234,17 @@ internal static class GearPlacementSync
                 if (scene == MyMod.level_guid && !MyMod.DedicatedServerAppMode) Receive(key, update, reply: false);
                 ScenePlacementSync.BroadcastDroppedMove(scene, key, update);
             }
+            if (decision != DroppedMovePolicy.Result.Conflict || !SamePose(current, move.Target))
+                MelonLogger.Msg($"[Drop move] Host decision={decision} scene={scene} key={key} player={sender} current={current.Position} target={move.Target.Position}");
             response = JsonSerializer.Serialize(new Move(current, current, visual.m_Extra.m_Variant, move.Operation));
         }
+        else MelonLogger.Warning($"[Drop move] Missing saved item scene={scene} key={key} player={sender}");
         if (sender > 0) ScenePlacementSync.ReplyDroppedMove(sender, scene, key, response);
         else Receive(key, response, reply: true);
     }
 
     private static bool SamePose(Pose left, Pose right) => left != null && right != null &&
-        (left.Position - right.Position).sqrMagnitude < .000001f && Mathf.Abs(Quaternion.Dot(left.Rotation, right.Rotation)) > .99999f;
+        (left.Position - right.Position).sqrMagnitude < .0001f && Mathf.Abs(Quaternion.Dot(left.Rotation, right.Rotation)) > .9999f;
 
     internal static void Receive(int key, string payload, bool reply)
     {
@@ -204,7 +260,7 @@ internal static class GearPlacementSync
             if (reply) MyMod.PickDroppedItem(key, -1);
             return;
         }
-        if (!move.Target.Valid || !reply && !SamePose(Pose.From(obj.transform), move.Original)) return;
+        if (!move.Target.Valid) return;
         var dummy = obj.GetComponent<Comps.DroppedGearDummy>();
         if (dummy == null) return;
         var extra = dummy.m_Extra;

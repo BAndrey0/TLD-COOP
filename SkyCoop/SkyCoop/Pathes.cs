@@ -150,7 +150,7 @@ public class Pathes
 			{
 				return;
 			}
-			if (GearPlacementSync.Finish(saveObj, placed: false)) return;
+			if (GearPlacementSync.IsConfirming(saveObj) || GearPlacementSync.Finish(saveObj, placed: false)) return;
 			if ((bool)saveObj.GetComponent<ObjectGuid>())
 			{
 				foreach (DataStr.UniversalSyncableObjectSpawner @object in ExpeditionEditor.m_Objects)
@@ -193,7 +193,11 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
 			__state = MyMod.InOnline() ? __instance.m_ObjectToPlace : null;
-			if (ScenePlacementSync.CanPlace(__state)) return true;
+			if (ScenePlacementSync.CanPlace(__state))
+			{
+				GearPlacementSync.BeginConfirmation(__state);
+				return true;
+			}
 			__state = null;
 			return false;
 		}
@@ -207,8 +211,7 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
-			if (!__runOriginal || !MyMod.InOnline() || saveObj == null ||
-				(__instance.m_ObjectToPlace == saveObj && __instance.IsInPlacementMode()))
+			if (!__runOriginal || !MyMod.InOnline() || saveObj == null)
 			{
 				return;
 			}
@@ -255,6 +258,8 @@ public class Pathes
 			Comps.DropFakeOnLeave component = saveObj.GetComponent<Comps.DropFakeOnLeave>();
 			if (component != null)
 			{
+				if (component.m_ReturnedToWorld) return;
+				component.m_ReturnedToWorld = true;
 				component.m_OldPossition = saveObj.transform.position;
 				component.m_OldRotation = saveObj.transform.rotation;
 				MyMod.SendDropItem(placedGear, 0, 0, samepose: true, variant);
@@ -274,12 +279,14 @@ public class Pathes
 					sourceKey = key;
 				}
 				component = saveObj.AddComponent<Comps.DropFakeOnLeave>();
+				component.m_ReturnedToWorld = true;
 				component.m_SearchKey = sourceKey;
 				component.m_OldPossition = saveObj.transform.position;
 				component.m_OldRotation = saveObj.transform.rotation;
 				MyMod.SendDropItem(saveObj.gameObject.GetComponent<GearItem>(), 0, 0, samepose: true, variant);
 			}
 		}
+		internal static void Finalizer(GameObject __state) => GearPlacementSync.EndConfirmation(__state);
 	}
 
 	[HarmonyPatch(typeof(PlayerManager), "InteractiveObjectsProcessAltFire")]
@@ -7652,7 +7659,12 @@ public class Pathes
 		string dropper = DGD.m_Extra.m_Dropper;
 		string text = "dropped";
 		int num = MyMod.MinutesFromStartServer - DGD.m_Extra.m_DroppedTime;
-		string text2 = DropTimeFormat(MyMod.TimeToDry(Name) - num + 1);
+		int total = MyMod.TimeToDry(Name);
+		bool russian = string.Equals(Localization.Language, "Russian", System.StringComparison.OrdinalIgnoreCase) ||
+			Localization.Language == "Русский";
+		if (russian && total > 0 && !Name.Contains("GEAR_SCWoodFormB"))
+			return localizedDisplayName + "\nПросушено " + Mathf.RoundToInt(100f * Mathf.Clamp01((float)num / total)) + "%";
+		string text2 = DropTimeFormat(total - num + 1);
 		string text3 = "Cured";
 		string text4 = "Cures in";
 		if (Name.Contains("GEAR_SCWoodFormB"))

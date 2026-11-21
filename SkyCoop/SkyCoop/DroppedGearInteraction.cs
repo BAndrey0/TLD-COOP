@@ -45,7 +45,7 @@ internal static class DroppedGearInteraction
     {
         GearPlacementSync.Tick();
         if (!MyMod.InOnline() || MyMod.LoadingScreenIsOn || MyMod.DedicatedServerAppMode ||
-            InterfaceManager.IsOverlayActiveImmediate() || CheatConsole.IsOpen || ItemSpawner.IsOpen ||
+            CheatConsole.IsOpen || ItemSpawner.IsOpen ||
             MyMod.ChatIsOpen() || !KeyboardUtilities.InputManager.GetKeyDown(KeyCode.Mouse1)) return;
         var player = GameManager.GetPlayerManagerComponent();
         if (!GearPlacementSync.CanInteract(player)) return;

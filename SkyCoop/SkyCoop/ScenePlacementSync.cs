@@ -92,6 +92,10 @@ internal static class ScenePlacementSync
     private static readonly Dictionary<(int Owner, int Key), RemotePot> RemotePots = new();
     private static readonly HashSet<int> PublishedPots = new();
     private static Client serverSession;
+    private static string furnitureWorld;
+    private static int furnitureSeed;
+    private static float replayFurnitureAt;
+    private static int furnitureReplays;
     private static string scene;
     private static int cookingDepth;
     private static float nextRequest;
@@ -424,15 +428,19 @@ internal static class ScenePlacementSync
     private static Dictionary<string, Move> GetScene(string area)
     {
         Server.clients.TryGetValue(1, out var session);
-        if (!ReferenceEquals(session, serverSession))
+        string world = WorldSaveIdentity.Active;
+        int seed = MPSaveManager.GetSeed();
+        if (!ReferenceEquals(session, serverSession) || furnitureWorld != world || furnitureSeed != seed)
         {
             serverSession = session;
+            furnitureWorld = world;
+            furnitureSeed = seed;
             Saved.Clear();
             AcceptedOperations.Clear();
             OperationOrder.Clear();
         }
         if (Saved.TryGetValue(area, out var moves)) return moves;
-        string data = MPSaveManager.LoadData(area + "_FurniturePositions", MPSaveManager.GetSeed());
+        string data = MPSaveManager.LoadData(area + "_FurniturePositions", seed);
         try { moves = data == null ? null : JsonSerializer.Deserialize<Dictionary<string, Move>>(data, FurnitureSaveOptions); }
         catch (JsonException) { moves = null; }
         moves ??= new Dictionary<string, Move>(StringComparer.Ordinal);
@@ -1337,6 +1345,7 @@ internal static class ScenePlacementSync
             FurnitureCreateAttempts.Clear();
             nextFurnitureApply = 0f;
             scene = area;
+            ScheduleFurnitureReplay();
             ContainerLockSync.Prepare(area);
             SceneRepairSync.Prepare(area);
             SceneWaterSync.Prepare(area);
@@ -1351,6 +1360,19 @@ internal static class ScenePlacementSync
         }
         if (area == null) return;
         float now = Time.realtimeSinceStartup;
+        if (MyMod.iAmHost && furnitureReplays > 0 && now >= replayFurnitureAt && !PlaceableManager.s_IsDeserializing)
+        {
+            furnitureReplays--;
+            replayFurnitureAt = now + 4f;
+            FurnitureCreateAttempts.Clear();
+            var savedFurniture = GetScene(area);
+            foreach (var move in savedFurniture.Values)
+            {
+                if (Unapplied.TryGetValue(move.Id, out var queued) && queued.Revision > move.Revision) continue;
+                Unapplied[move.Id] = move;
+            }
+            MelonLoader.MelonLogger.Msg($"[Furniture] Replay scene={area} saved={savedFurniture.Count} pending={Unapplied.Count}");
+        }
         foreach (var pair in RemotePots.ToArray())
             if (pair.Value.Expires <= now) ReceivePot(area, pair.Key.Owner, pair.Key.Key, null);
         if (Unapplied.Count > 0 && now >= nextFurnitureApply)
@@ -1368,6 +1390,13 @@ internal static class ScenePlacementSync
         foreach (var state in ContainerLockSync.Requests()) PublishLock(state);
         foreach (var id in SceneRepairSync.Requests(area)) PublishRepair(area, id);
         foreach (var level in SceneWaterSync.Requests()) PublishWaterLevel(area, level);
+    }
+
+    internal static void ScheduleFurnitureReplay()
+    {
+        furnitureReplays = 2;
+        replayFurnitureAt = Time.realtimeSinceStartup + 1f;
+        nextRequest = 0;
     }
 
     internal static void ReceiveClient(int from, Packet packet)
