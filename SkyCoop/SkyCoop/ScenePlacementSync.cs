@@ -54,7 +54,8 @@ internal static class ScenePlacementSync
             float.IsFinite(Qx) && float.IsFinite(Qy) && float.IsFinite(Qz) && float.IsFinite(Qw);
     }
 
-    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false, bool Removed = false, string Visible = "", string PreviousId = "");
+    private const int FurnitureHistoryLimit = 6;
+    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false, bool Removed = false, string Visible = "", string PreviousId = "", Pose[] History = null);
     private sealed class FurniturePlacement
     {
         internal GameObject Object;
@@ -69,12 +70,14 @@ internal static class ScenePlacementSync
     private static readonly HashSet<string> FurnitureApplyWarnings = new();
     private static readonly Dictionary<string, int> FurnitureCreateAttempts = new();
     private static readonly Dictionary<string, GameObject> FurnitureAliases = new(StringComparer.Ordinal);
+    private static readonly Dictionary<(string Area, string Id), string> NativeFurnitureIds = new();
+    private static (string Id, int Seed) nativeFurnitureWorld;
     private static readonly Dictionary<string, (Move Move, GameObject Object)> SettlingFurniture = new(StringComparer.Ordinal);
     private sealed record Pot(string Gear, Pose Pose, Pose Slot, string Meshes, string Food, string Mode, int Minutes, bool CanTake, int Liquid, string NativeHover, float Liters = 0f);
     private sealed record GearTransfer(Guid Id, int Requester, string Gear, string Json, float Heat, int TimesHeated);
     private sealed record WaterTransfer(Guid Id, int Requester, float Liters, bool Potable);
     private static readonly Dictionary<Guid, float> ReceivedOutputs = new();
-    private sealed record RemotePot(Pot State, GameObject Visual, BoxCollider Hitbox, float Expires);
+    private sealed record RemotePot(Pot State, GameObject Visual, Collider[] Hitboxes, float Expires);
     private static readonly Dictionary<string, Dictionary<string, Move>> Saved = new(StringComparer.Ordinal);
     // LoadData migrates old Unity vectors by lowercasing X, Y and Z before returning JSON.
     private static readonly JsonSerializerOptions FurnitureSaveOptions = new() { PropertyNameCaseInsensitive = true };
@@ -123,7 +126,13 @@ internal static class ScenePlacementSync
         foreach (var alias in FurnitureAliases)
             if (alias.Value == obj) return alias.Key;
         var placeable = obj.GetComponent<Placeable>();
-        if (placeable != null && !string.IsNullOrEmpty(placeable.m_Guid) && placeable.m_Addressable != null) return placeable.m_Guid;
+        if (placeable != null && !string.IsNullOrEmpty(placeable.m_Guid) && placeable.m_Addressable != null)
+        {
+            foreach (var binding in NativeFurnitureIds)
+                if (binding.Key.Area == MyMod.level_guid && binding.Value == placeable.m_Guid)
+                    return binding.Key.Id;
+            return placeable.m_Guid;
+        }
         string persistent = obj.GetComponent<ObjectGuid>()?.Get() ?? "";
         if (persistent.Length > 0) return persistent;
         if (placeable != null && !string.IsNullOrEmpty(placeable.m_Guid)) return placeable.m_Guid;
@@ -208,8 +217,12 @@ internal static class ScenePlacementSync
         }
         var obj = ObjectGuidManager.Lookup(id);
         if (DecorationItem.TryGetDecorationFromId(id, out var decoration) && decoration != null) return decoration.gameObject;
-        var placeable = (lookup ?? new PlacementLookup()).Find(id);
+        lookup ??= new PlacementLookup();
+        var placeable = lookup.Find(id);
         if (placeable != null) return placeable.gameObject;
+        if (NativeFurnitureIds.TryGetValue((MyMod.level_guid, id), out string nativeId) &&
+            !LatestRevision.ContainsKey(nativeId) && lookup.Find(nativeId) is { } known && known != null)
+            return known.gameObject;
         if (obj != null && (obj.GetComponent<DecorationItem>() != null || obj.GetComponent<Placeable>() != null)) return obj;
         if (!string.IsNullOrEmpty(anchor))
         {
@@ -542,13 +555,16 @@ internal static class ScenePlacementSync
                 AckMove(sender, area, move.Operation);
                 return;
             }
-            if (moves.TryGetValue(move.Id, out var existing) &&
-                existing with { Operation = move.Operation, Revision = move.Revision } == move)
+            moves.TryGetValue(move.Id, out var existing);
+            if (existing != null && existing with { Operation = move.Operation, Revision = move.Revision, History = null } == move with { History = null })
             {
                 AckMove(sender, area, move.Operation);
                 return;
             }
-            move = move with { Revision = revision + 1 };
+            Move previous = existing;
+            if (previous == null && !string.IsNullOrEmpty(move.PreviousId))
+                moves.TryGetValue(move.PreviousId, out previous);
+            move = move with { Revision = revision + 1, History = FurnitureHistory(move, previous) };
             var next = new Dictionary<string, Move>(moves, StringComparer.Ordinal);
             if (!string.IsNullOrEmpty(move.Anchor))
                 foreach (var old in moves.Values.Where(item => item.Id != move.Id && item.Anchor == move.Anchor))
@@ -593,7 +609,8 @@ internal static class ScenePlacementSync
 
     private static void ReceiveMove(string area, Move move)
     {
-        if (area != MyMod.level_guid || !HasFurniturePose(move) || move.RegisterOnly || string.IsNullOrEmpty(move.Id)) return;
+        if (area != MyMod.level_guid || !HasFurniturePose(move) || move.RegisterOnly || string.IsNullOrEmpty(move.Id) ||
+            (move.History?.Length ?? 0) > FurnitureHistoryLimit) return;
         if (LatestRevision.TryGetValue(move.Id, out long latest) && latest >= move.Revision) return;
         LatestRevision[move.Id] = move.Revision;
         Unapplied[move.Id] = move;
@@ -607,6 +624,24 @@ internal static class ScenePlacementSync
         (Guid.TryParseExact(move.Asset, "N", out _) && move.AssetName != null && move.AssetName.Length <= 128 &&
          float.IsFinite(move.Sx) && float.IsFinite(move.Sy) && float.IsFinite(move.Sz) &&
          Mathf.Abs(move.Sx) <= 20f && Mathf.Abs(move.Sy) <= 20f && Mathf.Abs(move.Sz) <= 20f);
+
+    private static bool SameFurniturePose(Pose left, Pose right) =>
+        left?.Valid == true && right?.Valid == true &&
+        (left.Position - right.Position).sqrMagnitude <= .0001f &&
+        Mathf.Abs(Quaternion.Dot(left.Rotation, right.Rotation)) >= .9999f;
+
+    private static Pose[] FurnitureHistory(Move move, Move previous)
+    {
+        if (move.Removed || string.IsNullOrEmpty(move.Asset) || previous == null || previous.Removed ||
+            previous.Asset != move.Asset) return null;
+        var poses = new List<Pose>();
+        foreach (var pose in (previous.History ?? Array.Empty<Pose>()).Prepend(previous.Pose))
+            if (pose?.Valid == true && !SameFurniturePose(pose, move.Pose) && !poses.Any(known => SameFurniturePose(known, pose)))
+                poses.Add(pose);
+        // Preserve the initial position as well as the most recent positions for returning players.
+        return poses.Count <= FurnitureHistoryLimit ? poses.ToArray() :
+            poses.Take(FurnitureHistoryLimit - 1).Append(poses[^1]).ToArray();
+    }
 
     private static int QueuedParentDepth(Move move)
     {
@@ -640,18 +675,20 @@ internal static class ScenePlacementSync
             obj.SetActive(false);
             return true;
         }
-        if (obj == null && !string.IsNullOrEmpty(move.Asset) && ValidFurnitureAsset(move))
+        if (obj == null && !string.IsNullOrEmpty(move.Asset))
         {
             var matches = UnityEngine.Object.FindObjectsOfType<Placeable>().Where(candidate =>
                 candidate != null && !candidate.m_Invalidated && candidate.m_Addressable?.AssetGUID == move.Asset &&
-                PlaceableManager.GetPlacementState(candidate) != PlacementState.Removed &&
+                PlaceableManager.GetPlacementState(candidate) is not (PlacementState.Removed or PlacementState.OnPlayer) &&
                 !LatestRevision.ContainsKey(candidate.m_Guid ?? "") &&
-                (candidate.transform.position - move.Pose.Position).sqrMagnitude <= .0001f &&
-                Mathf.Abs(Quaternion.Dot(candidate.transform.rotation, move.Pose.Rotation)) >= .9999f).Take(2).ToArray();
-            if (matches.Length == 1 && !FurnitureAliases.Values.Any(item => item == matches[0].gameObject))
+                !FurnitureAliases.Values.Any(item => item == candidate.gameObject) &&
+                !NativeFurnitureIds.Any(item => item.Key.Area == MyMod.level_guid && item.Value == candidate.m_Guid) &&
+                IsFurnitureMatch(move, Pose.From(candidate.transform))).Take(2).ToArray();
+            if (matches.Length == 1)
             {
                 obj = matches[0].gameObject;
                 FurnitureAliases[move.Id] = obj;
+                if (!string.IsNullOrEmpty(matches[0].m_Guid)) NativeFurnitureIds[(MyMod.level_guid, move.Id)] = matches[0].m_Guid;
                 MelonLoader.MelonLogger.Msg($"[Furniture] Reused {obj.name} native={matches[0].m_Guid} saved={move.Id}");
             }
         }
@@ -725,6 +762,9 @@ internal static class ScenePlacementSync
         return !awaitingParent;
     }
 
+    private static bool IsFurnitureMatch(Move move, Pose current) =>
+        SameFurniturePose(move.Pose, current) || move.History?.Any(prior => SameFurniturePose(prior, current)) == true;
+
     internal static bool ProbeFurniture()
     {
         var lookup = new PlacementLookup();
@@ -777,13 +817,14 @@ internal static class ScenePlacementSync
 
     internal static void ProbeGuestCooking()
     {
-        var slot = UnityEngine.Object.FindObjectOfType<CookingSlot>();
+        var slot = UnityEngine.Object.FindObjectsOfType<CookingSlot>().FirstOrDefault(candidate =>
+            candidate.m_GearPlacePoint != null && candidate.m_GearPlacePoint.GetPlacedGear() == null);
         if (slot?.m_GearPlacePoint == null) return;
         var pose = Pose.From(slot.m_GearPlacePoint.transform);
         const int owner = 1;
         const int key = -23802;
         var state = new Pot("GEAR_RecycledCan", pose, pose, "", "", "Cooking", 10, true, 2,
-            "Снег\nГотовится " + new string('я', 200));
+            "Снег\nГотовится " + new string('я', 200), .5f);
         string json = JsonSerializer.Serialize(state);
         try
         {
@@ -792,7 +833,19 @@ internal static class ScenePlacementSync
             received.ReadInt();
             Receive(received);
             var replica = FindRemotePot(slot.m_GearPlacePoint);
-            MelonLoader.MelonLogger.Msg($"[Guest cooking probe] encoded={json.Length} replica={replica?.Value.Visual != null} hover={!string.IsNullOrEmpty(CookingHover(slot.gameObject))}");
+            Physics.SyncTransforms();
+            int hits = 0;
+            var firstCollider = replica?.Value.Hitboxes?.FirstOrDefault();
+            if (firstCollider != null)
+            {
+                Vector3 center = firstCollider.bounds.center;
+                foreach (Vector3 direction in new[] { Vector3.forward, Vector3.right, Vector3.back, Vector3.left, Vector3.up })
+                    if (AimCookware(new Ray(center + direction, -direction), 2f) == replica.Value.Value.Visual) hits++;
+            }
+            var player = GameManager.GetPlayerManagerComponent();
+            bool opened = replica is { } pot && OpenCookingActions(pot.Value.Visual) && player.IsInspectModeActive();
+            MelonLoader.MelonLogger.Msg($"[Guest cooking probe] encoded={json.Length} replica={replica?.Value.Visual != null} hover={!string.IsNullOrEmpty(CookingHover(slot.gameObject))} rays={hits}/5 inspected={opened}");
+            if (opened) player.ExitInspectGearMode(true);
         }
         finally { ReceivePot(MyMod.level_guid, owner, key, null); }
     }
@@ -952,7 +1005,8 @@ internal static class ScenePlacementSync
             var gearPose = (gear.transform.position - point.transform.position).sqrMagnitude < .5625f ? Pose.From(gear.transform) : slotPose;
             PublishPot(key, new Pot(name, gearPose, slotPose, visible.ToString(),
                 food != null ? food.GetGearName() : "", pot?.GetCookingState().ToString() ?? "",
-                pot != null && float.IsFinite(pot.m_MinutesUntilCooked) ? Mathf.CeilToInt(pot.m_MinutesUntilCooked) : 0, canTake, liquid, pot?.GetHoverText() ?? "", pot?.m_LitersWaterBeingBoiled.ToLiters() ?? 0f));
+                pot != null && float.IsFinite(pot.m_MinutesUntilCooked) ? Mathf.CeilToInt(pot.m_MinutesUntilCooked) : 0, canTake, liquid, pot?.GetHoverText() ?? "",
+                liquid == 2 ? pot.m_LitersSnowBeingMelted.ToLiters() : pot?.m_LitersWaterBeingBoiled.ToLiters() ?? 0f));
         }
         foreach (int key in PublishedPots.ToArray())
             if (!LocalCooking.ContainsKey(key) && PublishedPots.Remove(key)) PublishPot(key, null);
@@ -1031,15 +1085,8 @@ internal static class ScenePlacementSync
         foreach (var pair in RemotePots)
             if (pair.Value.Visual == target) return pair;
         var slot = target.GetComponentInParent<CookingSlot>();
-        return FindRemotePot(slot?.m_GearPlacePoint ?? target.GetComponentInParent<GearPlacePoint>());
-    }
-
-    internal static bool IsCookwareReplica(GameObject target)
-    {
-        if (target == null) return false;
-        foreach (var pot in RemotePots.Values)
-            if (pot.Visual == target) return true;
-        return false;
+        var point = slot?.m_GearPlacePoint ?? target.GetComponentInParent<GearPlacePoint>();
+        return point != null && point.GetPlacedGear() == null ? FindRemotePot(point) : null;
     }
 
     internal static GameObject AimCookware(float range, RaycastHit worldHit = default)
@@ -1052,29 +1099,26 @@ internal static class ScenePlacementSync
             Physics.Raycast(ray, out worldHit, range, Utils.m_PhysicalCollisionLayerMask, QueryTriggerInteraction.Ignore);
         float nearest = worldHit.collider != null
             ? Mathf.Min(range, Vector3.Dot(worldHit.point - ray.origin, ray.direction) + .025f) : range;
+        return AimCookware(ray, nearest);
+    }
+
+    private static GameObject AimCookware(Ray ray, float nearest)
+    {
         GameObject selected = null;
         foreach (var remote in RemotePots.Values)
         {
-            var box = remote.Hitbox;
-            if (box == null) continue;
-            var localRay = new Ray(box.transform.InverseTransformPoint(ray.origin), box.transform.InverseTransformDirection(ray.direction));
-            var bounds = new Bounds(box.center, box.size);
-            bounds.Expand(new Vector3(.035f, .025f, .035f));
-            if (!bounds.IntersectRay(localRay, out float distance) || distance > nearest) continue;
-            selected = remote.Visual;
-            nearest = distance;
+            if (remote.Hitboxes == null) continue;
+            foreach (var collider in remote.Hitboxes)
+            {
+                if (collider == null || !collider.Raycast(ray, out var hit, nearest)) continue;
+                selected = remote.Visual;
+                nearest = hit.distance;
+            }
         }
         return selected;
     }
 
-    private static KeyValuePair<(int Owner, int Key), RemotePot>? CookingAtCrosshair(GameObject target)
-    {
-        if (target?.GetComponent<GearItem>() is { } gear && gear != null && LocalCooking.ContainsKey(gear.GetInstanceID()))
-            return null;
-        return FindRemoteCookware(target) ?? FindRemoteCookware(AimCookware(2.5f));
-    }
-
-    internal static string CookingHover(GameObject target) => CookingAtCrosshair(target) is { } entry ? CookingLabel(entry) : null;
+    internal static string CookingHover(GameObject target) => FindRemoteCookware(target) is { } entry ? CookingLabel(entry) : null;
 
     private static string CookingLabel(KeyValuePair<(int Owner, int Key), RemotePot> entry)
     {
@@ -1123,7 +1167,7 @@ internal static class ScenePlacementSync
 
     internal static bool OpenCookingActions(GameObject target)
     {
-        if (CookingAtCrosshair(target) is not { } entry) return false;
+        if (FindRemoteCookware(target) is not { } entry) return false;
         if (inspection != null) return true;
         var state = entry.Value.State;
         var player = GameManager.GetPlayerManagerComponent();
@@ -1147,7 +1191,9 @@ internal static class ScenePlacementSync
         pot.enabled = false;
         pot.m_MinutesUntilCooked = state.Minutes;
         if (Enum.TryParse<CookingPotItem.CookingState>(state.Mode, out var mode)) pot.m_CookingState = mode;
-        pot.m_LitersWaterBeingBoiled = GameCompat.Liters(state.Liters);
+        pot.m_GearItem = root.GetComponent<GearItem>();
+        pot.m_LitersSnowBeingMelted = GameCompat.Liters(state.Liquid == 2 ? state.Liters : 0f);
+        pot.m_LitersWaterBeingBoiled = GameCompat.Liters(state.Liquid == 1 ? state.Liters : 0f);
         var foodPrefab = state.Food.Length == 0 ? null : MyMod.GetGearItemObject(state.Food);
         GearItem food = null;
         if (foodPrefab != null)
@@ -1420,7 +1466,7 @@ internal static class ScenePlacementSync
         if (!ValidPot(pot)) return;
         if (previous == null && RemotePots.Count >= 128) return;
         var visual = previous?.Visual;
-        var hitbox = previous?.Hitbox;
+        var hitboxes = previous?.Hitboxes;
         if (previous != null && (previous.State.Gear != pot.Gear || previous.State.Food != pot.Food || previous.State.Meshes != pot.Meshes || previous.State.Liquid != pot.Liquid) && visual != null)
         {
             UnityEngine.Object.Destroy(visual);
@@ -1429,10 +1475,10 @@ internal static class ScenePlacementSync
         if (visual == null)
         {
             visual = CreatePotVisual(pot);
-            hitbox = visual != null ? visual.GetComponent<BoxCollider>() : null;
+            hitboxes = visual != null ? visual.GetComponentsInChildren<Collider>() : null;
         }
         if (visual != null) visual.transform.SetPositionAndRotation(pot.Pose.Position, pot.Pose.Rotation);
-        RemotePots[identity] = new RemotePot(pot, visual, hitbox, Time.realtimeSinceStartup + 7f);
+        RemotePots[identity] = new RemotePot(pot, visual, hitboxes, Time.realtimeSinceStartup + 7f);
     }
 
     private static bool ValidPot(Pot pot) => float.IsFinite(pot.Liters) && pot.Liters >= 0f && pot.Liters <= 20f && IsCookingGearName(pot.Gear) && pot.Pose?.Valid == true && pot.Slot?.Valid == true &&
@@ -1454,8 +1500,7 @@ internal static class ScenePlacementSync
         var prefab = MyMod.GetGearItemObject(useFood ? pot.Food : pot.Gear);
         if (prefab == null) return null;
         var root = new GameObject("TLD Coop cooking slot");
-        var originalCollider = prefab.GetComponent<Collider>() ?? prefab.GetComponentInChildren<Collider>(true);
-        root.layer = originalCollider != null ? originalCollider.gameObject.layer : prefab.layer;
+        root.layer = prefab.layer;
         Bounds hitBounds = default;
         bool hasHitBounds = false;
         var cooking = prefab.GetComponent<CookingPotItem>();
@@ -1497,10 +1542,83 @@ internal static class ScenePlacementSync
                 else { hitBounds = new Bounds(point, Vector3.zero); hasHitBounds = true; }
             }
         }
-        var hitbox = root.AddComponent<BoxCollider>();
-        hitbox.center = hasHitBounds ? hitBounds.center : Vector3.up * .07f;
-        hitbox.size = hasHitBounds ? Vector3.Max(hitBounds.size + Vector3.one * .02f, Vector3.one * .055f) : new Vector3(.20f, .15f, .20f);
+        if (!CopyCookwareColliders(prefab, root) && hasHitBounds)
+        {
+            var hitbox = root.AddComponent<BoxCollider>();
+            hitbox.isTrigger = true;
+            hitbox.center = hitBounds.center;
+            hitbox.size = Vector3.Max(hitBounds.size, Vector3.one * .01f);
+        }
         return root;
+    }
+
+    private static bool CopyCookwareColliders(GameObject prefab, GameObject replica)
+    {
+        bool copied = false;
+        foreach (var source in prefab.GetComponentsInChildren<Collider>(true))
+        {
+            if (!source.enabled || !ActiveBelow(source.transform, prefab.transform)) continue;
+            var child = new GameObject(source.name) { layer = source.gameObject.layer };
+            child.transform.SetParent(replica.transform, false);
+            child.transform.localPosition = prefab.transform.InverseTransformPoint(source.transform.position);
+            child.transform.localRotation = Quaternion.Inverse(prefab.transform.rotation) * source.transform.rotation;
+            child.transform.localScale = source.transform.lossyScale;
+            Collider hitbox;
+            if (source.TryCast<BoxCollider>() is { } box)
+            {
+                var copy = child.AddComponent<BoxCollider>();
+                copy.center = box.center;
+                copy.size = box.size;
+                hitbox = copy;
+            }
+            else if (source.TryCast<SphereCollider>() is { } sphere)
+            {
+                var copy = child.AddComponent<SphereCollider>();
+                copy.center = sphere.center;
+                copy.radius = sphere.radius;
+                hitbox = copy;
+            }
+            else if (source.TryCast<CapsuleCollider>() is { } capsule)
+            {
+                var copy = child.AddComponent<CapsuleCollider>();
+                copy.center = capsule.center;
+                copy.radius = capsule.radius;
+                copy.height = capsule.height;
+                copy.direction = capsule.direction;
+                hitbox = copy;
+            }
+            else if (source.TryCast<MeshCollider>() is { } mesh && mesh.sharedMesh != null)
+            {
+                var copy = child.AddComponent<MeshCollider>();
+                copy.convex = mesh.convex;
+                copy.sharedMesh = mesh.sharedMesh;
+                hitbox = copy;
+            }
+            else
+            {
+                UnityEngine.Object.Destroy(child);
+                continue;
+            }
+            if (hitbox.TryCast<MeshCollider>() is not { convex: false }) hitbox.isTrigger = true;
+            copied = true;
+        }
+        return copied;
+    }
+
+    internal static GameObject CookwareReplicaRoot(GameObject target)
+    {
+        if (target == null) return null;
+        foreach (var pot in RemotePots.Values)
+            if (pot.Visual != null && (target == pot.Visual || target.transform.parent == pot.Visual.transform))
+                return pot.Visual;
+        return null;
+    }
+
+    private static bool ActiveBelow(Transform child, Transform root)
+    {
+        for (var part = child; part != root; part = part.parent)
+            if (!part.gameObject.activeSelf) return false;
+        return true;
     }
 
     internal static void Tick()
@@ -1520,6 +1638,15 @@ internal static class ScenePlacementSync
                 if (claim.Value.Expires <= current) CookingClaims.Remove(claim.Key);
         }
         string area = InWorld ? MyMod.level_guid : null;
+        if (area != null)
+        {
+            var world = (WorldSaveIdentity.Active, MPSaveManager.GetSeed());
+            if (nativeFurnitureWorld != world)
+            {
+                NativeFurnitureIds.Clear();
+                nativeFurnitureWorld = world;
+            }
+        }
         if (area != scene)
         {
             foreach (var pot in RemotePots.Values)

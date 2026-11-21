@@ -3650,8 +3650,8 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
-			var cookware = hit.transform != null && ScenePlacementSync.IsCookwareReplica(hit.transform.gameObject)
-				? hit.transform.gameObject : ScenePlacementSync.AimCookware(2.5f, hit);
+			var cookware = hit.transform != null ? ScenePlacementSync.CookwareReplicaRoot(hit.transform.gameObject) : null;
+			if (cookware == null && gi == null) cookware = ScenePlacementSync.AimCookware(2.5f, hit);
 			if (cookware != null)
 			{
 				gi = null;
