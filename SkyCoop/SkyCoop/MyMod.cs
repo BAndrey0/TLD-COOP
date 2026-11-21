@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.33";
+		public const string Version = "0.16.34";
 
 		public const string DownloadLink = null;
 
@@ -1054,51 +1054,30 @@ public class MyMod : MelonMod
 		}
 	}
 
-	private static readonly System.Collections.Generic.Dictionary<int, float> RecentBedrollPickups = new();
-
 	public static void AddSlicedJsonDataForPicker(DataStr.SlicedJsonData jData, bool place)
 	{
-		if (SlicedJsonDataBuffer.ContainsKey(jData.m_Hash))
+		string value3;
+		if (place)
 		{
-			string value = "";
-			if (SlicedJsonDataBuffer.TryGetValue(jData.m_Hash, out value))
-			{
-				string value2 = value + jData.m_Str;
-				SlicedJsonDataBuffer.Remove(jData.m_Hash);
-				SlicedJsonDataBuffer.Add(jData.m_Hash, value2);
-			}
-			else
-			{
-				SlicedJsonDataBuffer.Add(jData.m_Hash, jData.m_Str);
-			}
+			value3 = GearPlacementSync.ReadPreview(jData);
+			if (value3 == null) return;
 		}
 		else
 		{
-			SlicedJsonDataBuffer.Add(jData.m_Hash, jData.m_Str);
+			SlicedJsonDataBuffer.TryGetValue(jData.m_Hash, out string previous);
+			value3 = previous + jData.m_Str;
+			if (!jData.m_Last)
+			{
+				SlicedJsonDataBuffer[jData.m_Hash] = value3;
+				return;
+			}
+			SlicedJsonDataBuffer.Remove(jData.m_Hash);
+			DiscardRepeatPacket();
+			RemovePleaseWait();
+			PendingPickupVisual.Confirm(jData.m_Hash);
 		}
-		if (!jData.m_Last)
-		{
-			return;
-		}
-		string value3 = "";
-		DiscardRepeatPacket();
-		RemovePleaseWait();
-		PendingPickupVisual.Confirm(jData.m_Hash);
-		if (!SlicedJsonDataBuffer.TryGetValue(jData.m_Hash, out value3))
-		{
-			return;
-		}
-		SlicedJsonDataBuffer.Remove(jData.m_Hash);
 		MelonLogger.Msg(System.ConsoleColor.Green, "Finished getting data for:" + jData.m_Hash);
 		string gearName = jData.m_Extra.m_GearName;
-		if (!place && jData.m_Extra.m_Variant == 1 && gearName.Contains("bedroll", System.StringComparison.OrdinalIgnoreCase))
-		{
-			float now = Time.realtimeSinceStartup;
-			foreach (var recent in RecentBedrollPickups.ToArray())
-				if (recent.Value <= now) RecentBedrollPickups.Remove(recent.Key);
-			if (RecentBedrollPickups.ContainsKey(jData.m_Hash)) return;
-			RecentBedrollPickups[jData.m_Hash] = now + 30f;
-		}
 		MelonLogger.Msg(System.ConsoleColor.Cyan, "Going to get " + jData.m_Extra.m_GearName);
 		GameObject gearItemObject = GetGearItemObject(gearName);
 		if (gearItemObject == null)
@@ -1116,16 +1095,10 @@ public class MyMod : MelonMod
 		gameObject.name = CloneTrimer(gameObject.name);
 		DataStr.ExtraDataForDroppedGear extra = jData.m_Extra;
 		GearItem component = gameObject.GetComponent<GearItem>();
-		bool flag = false;
 		if (!string.IsNullOrEmpty(value3))
 		{
 			DeserializeDroppedGear(component, value3, extra);
 		}
-		else
-		{
-			flag = true;
-		}
-		MelonLogger.Msg(System.ConsoleColor.Cyan, "UseLastVisualDropPos " + flag);
 		if (!string.IsNullOrEmpty(jData.m_Extra.m_PhotoGUID))
 		{
 			GearItem component2 = gameObject.GetComponent<GearItem>();
@@ -1148,16 +1121,10 @@ public class MyMod : MelonMod
 		}
 		gameObject.GetComponent<GearItem>().m_BeenInPlayerInventory = true;
 		Comps.DropFakeOnLeave dropFakeOnLeave = gameObject.AddComponent<Comps.DropFakeOnLeave>();
-		if (!flag)
-		{
-			dropFakeOnLeave.m_OldPossition = gameObject.gameObject.transform.position;
-			dropFakeOnLeave.m_OldRotation = gameObject.gameObject.transform.rotation;
-		}
-		else
-		{
-			dropFakeOnLeave.m_OldPossition = LastPickedVisualPosition;
-			dropFakeOnLeave.m_OldRotation = LastPickedVisualRotation;
-		}
+		dropFakeOnLeave.m_SearchKey = jData.m_Hash;
+		dropFakeOnLeave.m_OldPossition = LastPickedVisualPosition;
+		dropFakeOnLeave.m_OldRotation = LastPickedVisualRotation;
+		if (!place) gameObject.transform.SetPositionAndRotation(LastPickedVisualPosition, LastPickedVisualRotation);
 		if (extra != null)
 		{
 			if (extra.m_GoalTime != 0 && extra.m_GoalTime != -1)
@@ -1204,7 +1171,7 @@ public class MyMod : MelonMod
 		{
 			ThrownFlareSync.ApplyPickupBurn(component, extra);
 			component.PlayPickUpClip();
-			GameManager.GetPlayerManagerComponent().StartPlaceMesh(gameObject, PlaceMeshFlags.None);
+			if (!GearPlacementSync.Start(GameManager.GetPlayerManagerComponent(), gameObject, jData.m_Hash)) return;
 		}
 		PatchBookReadTime(component);
 	}
@@ -6978,114 +6945,26 @@ public class MyMod : MelonMod
 		}
 	}
 
+	internal static bool DropInteractionPending => LastPacketForRepeat == ResendPacketType.GearPickup;
+
 	public static void PlaceDroppedGear(GameObject obj)
 	{
-		string name = obj.name;
-		string text = CloneTrimer(name).ToLower();
-		string text2 = CloneTrimer(name);
-		Vector3 position = obj.transform.position;
-		Quaternion rotation = obj.transform.rotation;
-		int num = 0;
-		string text3 = level_guid;
-		LastPickedVisualPosition = obj.transform.position;
-		LastPickedVisualRotation = obj.transform.rotation;
-		if (obj.GetComponent<Comps.DroppedGearDummy>() != null)
+		var dummy = DroppedGearInteraction.Find(obj);
+		if (!GearPlacementSync.Request(dummy)) return;
+		int key = dummy.m_SearchKey;
+		if (sendMyPosition)
 		{
-			num = obj.GetComponent<Comps.DroppedGearDummy>().m_SearchKey;
-			MelonLogger.Msg("Searching for " + text + " with hash " + num);
-			if (sendMyPosition)
-			{
-				DoPleaseWait("Downloading Gear", "Please wait..");
-				using Packet packet = new Packet(91);
-				packet.Write(num);
-				packet.Write(text3);
-				ResendGearSearchKey = num;
-				ResendGearLvlKey = text3;
-				SetRepeatPacket(ResendPacketType.GearPlace);
-				SendUDPData(packet);
-				return;
-			}
-			DataStr.SlicedJsonDroppedGear slicedJsonDroppedGear = MPSaveManager.RequestSpecificGear(num, level_guid);
-			if (slicedJsonDroppedGear != null)
-			{
-				MelonLogger.Msg("Found " + num);
-				string text4 = text2;
-				if (text4 == "gear_knife" && Supporters.ConfiguratedBenefits.m_Knife)
-				{
-					text4 = "GEAR_JeremiahKnife";
-				}
-				GameObject gearItemObject = GetGearItemObject(text4);
-				if (gearItemObject == null)
-				{
-					MelonLogger.Msg(System.ConsoleColor.Red, "Gear prefab with name " + text4 + " not exist! Maybe you miss an modded item pack?");
-					return;
-				}
-				GameObject gameObject = UnityEngine.Object.Instantiate(gearItemObject, position, rotation);
-				DisableObjectForXPMode.RemoveDisabler(gameObject.gameObject);
-				DataStr.ExtraDataForDroppedGear extra = obj.GetComponent<Comps.DroppedGearDummy>().m_Extra;
-				if (gameObject == null)
-				{
-					MelonLogger.Msg(System.ConsoleColor.Red, "Gear prefab with name " + text4 + " not exist! Maybe you miss an modded item pack?");
-					return;
-				}
-				gameObject.name = CloneTrimer(gameObject.name);
-				if (!string.IsNullOrEmpty(slicedJsonDroppedGear.m_Json))
-				{
-					DeserializeDroppedGear(gameObject.GetComponent<GearItem>(), slicedJsonDroppedGear.m_Json, extra);
-					ThrownFlareSync.ApplyPickupBurn(gameObject.GetComponent<GearItem>(), obj.GetComponent<Comps.DroppedGearDummy>()?.m_Extra);
-				}
-				if (!string.IsNullOrEmpty(extra.m_PhotoGUID))
-				{
-					GearItem component = gameObject.GetComponent<GearItem>();
-					if (component.m_ObjectGuid == null)
-					{
-						string photoGUID = extra.m_PhotoGUID;
-						ObjectGuid objectGuid = gameObject.AddComponent<ObjectGuid>();
-						objectGuid.Set(photoGUID);
-						component.m_ObjectGuid = objectGuid;
-						if (component.GetGearName() != "GEAR_SCMapReveal")
-						{
-							MelonLogger.Msg("Going render photo " + photoGUID);
-							Texture2D photoTexture = MPSaveManager.GetPhotoTexture(photoGUID, component.GetGearName());
-							if ((bool)photoTexture)
-							{
-								gameObject.transform.GetChild(0).gameObject.GetComponent<Renderer>().material.mainTexture = photoTexture;
-							}
-						}
-					}
-				}
-				gameObject.GetComponent<GearItem>().m_BeenInPlayerInventory = true;
-				Comps.DropFakeOnLeave dropFakeOnLeave = gameObject.AddComponent<Comps.DropFakeOnLeave>();
-				dropFakeOnLeave.m_OldPossition = gameObject.gameObject.transform.position;
-				dropFakeOnLeave.m_OldRotation = gameObject.gameObject.transform.rotation;
-				gameObject.GetComponent<GearItem>().PlayPickUpClip();
-				GameManager.GetPlayerManagerComponent().StartPlaceMesh(gameObject, PlaceMeshFlags.None);
-				DroppedGearsObjs.Remove(num);
-				TrackableDroppedGearsObjs.Remove(num);
-				if (obj.GetComponent<Comps.DroppedGearDummy>().m_DecoyDummy != null)
-				{
-					GearManager.RemovedFromDroppedDecoys(obj.GetComponent<Comps.DroppedGearDummy>().m_DecoyDummy);
-					UnityEngine.Object.Destroy(obj.GetComponent<Comps.DroppedGearDummy>().m_DecoyDummy.gameObject);
-				}
-				UnityEngine.Object.Destroy(obj);
-				ServerSend.PICKDROPPEDGEAR(0, num, toEveryOne: true);
-			}
-			else
-			{
-				MelonLogger.Msg("Gear with hash " + num + " is missing!");
-			}
+			using var packet = new Packet(91);
+			packet.Write(key);
+			packet.Write(level_guid);
+			SendUDPData(packet);
+			return;
 		}
-		else
-		{
-			GearItem component2 = obj.GetComponent<GearItem>();
-			if (component2 != null && !component2.m_BeenInPlayerInventory && !ServerConfig.m_DuppedSpawns)
-			{
-				Comps.DropFakeOnLeave dropFakeOnLeave2 = obj.AddComponent<Comps.DropFakeOnLeave>();
-				dropFakeOnLeave2.m_OldPossition = obj.transform.position;
-				dropFakeOnLeave2.m_OldRotation = obj.transform.rotation;
-				MelonLogger.Msg("Trying place pre-spawned gear, so dropping fake on cancle");
-			}
-		}
+		var data = MPSaveManager.RequestSpecificGear(key, level_guid, Remove: false);
+		if (data != null)
+			AddSlicedJsonDataForPicker(new DataStr.SlicedJsonData { m_Hash = key, m_Last = true,
+				m_Str = data.m_Json, m_Extra = ThrownFlareSync.SnapshotPickup(data.m_Extra) }, place: true);
+		else GearPlacementSync.MissingPreview(key);
 	}
 
 	private static void InitializePickedDrop(GearItem gear, DataStr.ExtraDataForDroppedGear extra)
@@ -7164,6 +7043,7 @@ public class MyMod : MelonMod
 
 	public static void PickupDroppedGear(GameObject obj, bool SkipLocksmith = false)
 	{
+		if (DropInteractionPending || GearPlacementSync.Busy) return;
 		string name = obj.name;
 		string text = CloneTrimer(name).ToLower();
 		string text2 = CloneTrimer(name);
@@ -7262,8 +7142,10 @@ public class MyMod : MelonMod
 				}
 				gameObject.GetComponent<GearItem>().m_BeenInPlayerInventory = true;
 				Comps.DropFakeOnLeave dropFakeOnLeave = gameObject.AddComponent<Comps.DropFakeOnLeave>();
-				dropFakeOnLeave.m_OldPossition = gameObject.gameObject.transform.position;
-				dropFakeOnLeave.m_OldRotation = gameObject.gameObject.transform.rotation;
+				dropFakeOnLeave.m_SearchKey = num;
+				dropFakeOnLeave.m_OldPossition = position;
+				dropFakeOnLeave.m_OldRotation = rotation;
+				gameObject.transform.SetPositionAndRotation(position, rotation);
 				if (component != null && component.m_Extra.m_GoalTime != 0 && component.m_Extra.m_GoalTime != -1)
 				{
 					GearItem component3 = gameObject.GetComponent<GearItem>();
@@ -7798,13 +7680,7 @@ public class MyMod : MelonMod
 		string name = gameObject.name;
 		string text2 = CloneTrimer(name).ToLower();
 		string text3 = cookingOutput ? gear.GetGearName() : CloneTrimer(name);
-		int vectorHash = Shared.GetVectorHash(position2);
-		int quaternionHash = Shared.GetQuaternionHash(rotation);
-		int hashCode = Shared.StableHash(level_guid);
-		int hash = vectorHash + quaternionHash + hashCode;
-		// A second thrown stone may settle at the same pose as an existing drop.
-		if (settledThrow || cookingOutput || (variant == 1 && gear.m_Bed != null))
-			hash = System.Guid.NewGuid().GetHashCode();
+		int hash = gameObject.GetComponent<Comps.DropFakeOnLeave>()?.m_SearchKey ?? System.Guid.NewGuid().GetHashCode();
 		string text4 = level_guid;
 		if (nums > 0 && gear.m_StackableItem != null)
 		{

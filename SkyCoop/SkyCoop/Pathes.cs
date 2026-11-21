@@ -150,6 +150,7 @@ public class Pathes
 			{
 				return;
 			}
+			if (GearPlacementSync.Finish(saveObj, placed: false)) return;
 			if ((bool)saveObj.GetComponent<ObjectGuid>())
 			{
 				foreach (DataStr.UniversalSyncableObjectSpawner @object in ExpeditionEditor.m_Objects)
@@ -197,7 +198,7 @@ public class Pathes
 			return false;
 		}
 
-		internal static void Postfix(PlayerManager __instance, GameObject __state)
+		internal static void Postfix(PlayerManager __instance, GameObject __state, bool __runOriginal)
 		{
 			var saveObj = __state;
 			if (MyMod.CrazyPatchesLogger)
@@ -206,10 +207,12 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
-			if (!MyMod.InOnline() || !(saveObj != null))
+			if (!__runOriginal || !MyMod.InOnline() || saveObj == null ||
+				(__instance.m_ObjectToPlace == saveObj && __instance.IsInPlacementMode()))
 			{
 				return;
 			}
+			if (GearPlacementSync.Finish(saveObj, placed: true)) return;
 			if ((bool)saveObj.GetComponent<ObjectGuid>())
 			{
 				foreach (DataStr.UniversalSyncableObjectSpawner @object in ExpeditionEditor.m_Objects)
@@ -254,7 +257,7 @@ public class Pathes
 			{
 				component.m_OldPossition = saveObj.transform.position;
 				component.m_OldRotation = saveObj.transform.rotation;
-				MyMod.SendDropItem(saveObj.gameObject.GetComponent<GearItem>(), 0, 0, samepose: true, variant);
+				MyMod.SendDropItem(placedGear, 0, 0, samepose: true, variant);
 				return;
 			}
 			GearItem component2 = placedGear;
@@ -264,7 +267,14 @@ public class Pathes
 			}
 			else if (component2.m_Cookable == null || !component2.m_Cookable.IsNearFire())
 			{
+				int? sourceKey = null;
+				if (!component2.m_BeenInPlayerInventory)
+				{
+					if (!PickupSync.RetireWorldSource(component2, out int key)) return;
+					sourceKey = key;
+				}
 				component = saveObj.AddComponent<Comps.DropFakeOnLeave>();
+				component.m_SearchKey = sourceKey;
 				component.m_OldPossition = saveObj.transform.position;
 				component.m_OldRotation = saveObj.transform.rotation;
 				MyMod.SendDropItem(saveObj.gameObject.GetComponent<GearItem>(), 0, 0, samepose: true, variant);
@@ -338,8 +348,6 @@ public class Pathes
 				var target = __instance.GetInteractiveObjectUnderCrosshair();
 				var dropped = DroppedGearInteraction.Find(target);
 				if (dropped != null) DroppedGearInteraction.Place(dropped);
-				else MyMod.PlaceDroppedGear(target);
-				MelonLogger.Msg("Going to place object");
 			}
 		}
 	}
@@ -2615,19 +2623,26 @@ public class Pathes
 	[HarmonyPatch(typeof(BreakDown), "DoBreakDown")]
 	private static class DoBreakDown_Sync
 	{
-		private static bool Prefix(BreakDown __instance, out string __state)
+		private static bool Prefix(BreakDown __instance, out (string Radial, System.Action Remove) __state)
 		{
-			__state = RadialSpawnSync.Active ? RadialSpawnSync.BreakdownId(__instance) : "";
-			return __state.Length == 0 || !RadialSpawnSync.IsBroken(__state);
+			string radial = RadialSpawnSync.Active ? RadialSpawnSync.BreakdownId(__instance) : "";
+			__state = (radial, radial.Length == 0 ? ScenePlacementSync.CaptureBreakdown(__instance) : null);
+			return radial.Length == 0 || !RadialSpawnSync.IsBroken(radial);
 		}
 
-		internal static void Postfix(BreakDown __instance, string __state, bool __runOriginal)
+		internal static void Postfix(BreakDown __instance, (string Radial, System.Action Remove) __state, bool __runOriginal)
 		{
 			if (!__runOriginal) return;
-			if (__state.Length > 0)
+			if (__state.Radial.Length > 0)
 			{
-				RadialSpawnSync.MarkBroken(__state);
-				MyMod.SendBrokeFurniture(__state, "", MyMod.levelid, MyMod.level_guid);
+				RadialSpawnSync.MarkBroken(__state.Radial);
+				MyMod.SendBrokeFurniture(__state.Radial, "", MyMod.levelid, MyMod.level_guid);
+				return;
+			}
+			if (__state.Remove != null)
+			{
+				__state.Remove();
+				MyMod.BakePreSpawnedGearsList();
 				return;
 			}
 			if (MyMod.CrazyPatchesLogger)

@@ -89,7 +89,7 @@ public static class PickupSync
 		return false;
 	}
 
-	private static void Remember(GearItem item)
+	internal static void Remember(GearItem item)
 	{
 		try
 		{
@@ -131,6 +131,24 @@ public static class PickupSync
 		{
 			MelonLogger.Warning("[Pickup sync] " + ex.Message);
 		}
+	}
+
+	internal static bool RetireWorldSource(GearItem item, out int dropKey)
+	{
+		dropKey = 0;
+		if (item == null || item.m_BeenInPlayerInventory || !Candidates.TryGetValue(item.Pointer, out var candidate)) return false;
+		if (item.GetComponent<NarrativeCollectibleItem>() != null || Pathes.DuppableGearItem(candidate.Gear) ||
+			Pathes.GarbadgeFilter(candidate.Gear) || MyMod.ServerConfig.m_DuppedSpawns) return false;
+		dropKey = Shared.StableHash(FormattableString.Invariant(
+			$"Moved|{MyMod.level_guid}|{candidate.Gear}|{candidate.Position.x:F3}|{candidate.Position.y:F3}|{candidate.Position.z:F3}"));
+		candidate.Time = Time.realtimeSinceStartup;
+		Candidates[item.Pointer] = candidate;
+		ByInstance[candidate.InstanceId] = candidate;
+		Picked(item);
+		item.m_BeenInPlayerInventory = true;
+		var spawner = item.GetComponentInParent<RadialObjectSpawner>();
+		if (spawner != null) spawner.RemoveFromSpawns(item.gameObject);
+		return true;
 	}
 
 	private static void Picked(GearItem item)

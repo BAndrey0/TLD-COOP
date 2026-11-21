@@ -16,7 +16,8 @@ internal static class DroppedGearInteraction
     private static bool Begin(Comps.DroppedGearDummy dummy)
     {
         if (dummy == null || !MyMod.InOnline() || MyMod.LoadingScreenIsOn || MyMod.SaveExitPending ||
-            actionFrame == Time.frameCount) return false;
+            actionFrame == Time.frameCount || GearPlacementSync.Busy ||
+            MyMod.DropInteractionPending || !GearPlacementSync.CanInteract(GameManager.GetPlayerManagerComponent())) return false;
         int instance = dummy.GetInstanceID();
         if (pendingInstance == instance && Time.realtimeSinceStartup < pendingUntil) return false;
         actionFrame = Time.frameCount;
@@ -42,11 +43,12 @@ internal static class DroppedGearInteraction
 
     internal static void Tick()
     {
+        GearPlacementSync.Tick();
         if (!MyMod.InOnline() || MyMod.LoadingScreenIsOn || MyMod.DedicatedServerAppMode ||
             InterfaceManager.IsOverlayActiveImmediate() || CheatConsole.IsOpen || ItemSpawner.IsOpen ||
             MyMod.ChatIsOpen() || !KeyboardUtilities.InputManager.GetKeyDown(KeyCode.Mouse1)) return;
         var player = GameManager.GetPlayerManagerComponent();
-        if (player == null || player.GetControlMode() != PlayerControlMode.Normal || player.IsInPlacementMode()) return;
+        if (!GearPlacementSync.CanInteract(player)) return;
         var dummy = Find(player.GetInteractiveObjectUnderCrosshair());
         if (dummy != null) Place(dummy);
     }

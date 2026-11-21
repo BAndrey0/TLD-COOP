@@ -33,9 +33,9 @@ internal class ServerHandle
 		}
 		else if (text2 != "RCON")
 		{
-			if (text2 != "0.16.33")
+			if (text2 != "0.16.34")
 			{
-				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.33");
+				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.34");
 				Shared.SendMessageToChat(new DataStr.MultiplayerChatMessage
 				{
 					m_Type = 0,
@@ -918,7 +918,7 @@ internal class ServerHandle
 		int hash = _packet.ReadInt();
 		string scene = _packet.ReadString();
 		Log("Client " + _fromClient + " trying to place gear with hash " + hash);
-		Shared.ClientTryPickupItem(hash, _fromClient, scene, place: true);
+		GearPlacementSync.SendPreview(_fromClient, scene, hash);
 	}
 
 	public static void SendAllOpenables(int _fromClient, string scene)

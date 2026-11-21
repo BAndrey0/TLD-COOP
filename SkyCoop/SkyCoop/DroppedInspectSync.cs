@@ -83,6 +83,11 @@ public static class DroppedInspectSync
 			{
 				pending.Remove(__0.GetInstanceID());
 			}
+			if (__0 != null && __0.m_InPlayerInventory && __0.GetComponent<Comps.DropFakeOnLeave>() is { } marker && marker != null)
+			{
+				marker.m_SearchKey = null;
+				UnityEngine.Object.Destroy(marker);
+			}
 		}
 	}
 
@@ -128,6 +133,7 @@ public static class DroppedInspectSync
 			if(Time.frameCount<=entry.frame+2||player==null)continue;
 			openings.Remove(id);
 			if(player.IsInspectModeActive()&&player.GearItemBeingInspected()==entry.item)continue;
+			if (!GearPlacementSync.CanInteract(player)) { ReturnOnce(entry.item); continue; }
 			// Decorations and other gear without an inspect presentation still
 			// have a valid native pickup path. Do not drop them back immediately.
 			taking.Add(id);
@@ -159,6 +165,7 @@ public static class DroppedInspectSync
 			return false;
 		}
 		item.m_BeenInPlayerInventory = true;
+		if (!GearPlacementSync.CanInteract(player)) return ReturnOnce(item);
 		int instanceID = item.GetInstanceID();
 		pending[instanceID] = item;
 		try

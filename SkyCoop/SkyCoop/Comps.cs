@@ -74,6 +74,7 @@ public class Comps
 	public class DropFakeOnLeave : MonoBehaviour
 	{
 		public bool m_ReturnedToWorld;
+		public int? m_SearchKey;
 
 		public Vector3 m_OldPossition = new Vector3(0f, 0f, 0f);
 

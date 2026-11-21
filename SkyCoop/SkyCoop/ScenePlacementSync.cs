@@ -54,7 +54,7 @@ internal static class ScenePlacementSync
             float.IsFinite(Qx) && float.IsFinite(Qy) && float.IsFinite(Qz) && float.IsFinite(Qw);
     }
 
-    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false);
+    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false, bool Removed = false, string Visible = "");
     private sealed class FurniturePlacement
     {
         internal GameObject Object;
@@ -176,15 +176,26 @@ internal static class ScenePlacementSync
     private static GameObject Find(string id, string anchor = "", PlacementLookup lookup = null)
     {
         if (string.IsNullOrEmpty(id)) return null;
+        if (id.StartsWith("breakdown-", StringComparison.Ordinal))
+        {
+            BreakDown match = null;
+            foreach (var item in UnityEngine.Object.FindObjectsOfType<BreakDown>(true))
+            {
+                if (item == null || BreakdownId(item) != id) continue;
+                if (match != null) return null;
+                match = item;
+            }
+            return match != null ? match.gameObject : null;
+        }
         var obj = ObjectGuidManager.Lookup(id);
-        if (obj != null) return obj;
         if (DecorationItem.TryGetDecorationFromId(id, out var decoration) && decoration != null) return decoration.gameObject;
         var placeable = (lookup ?? new PlacementLookup()).Find(id);
         if (placeable != null) return placeable.gameObject;
+        if (obj != null && (obj.GetComponent<DecorationItem>() != null || obj.GetComponent<Placeable>() != null)) return obj;
         if (!string.IsNullOrEmpty(anchor))
         {
             GameObject match = null;
-            foreach (var item in UnityEngine.Object.FindObjectsOfType<DecorationItem>())
+            foreach (var item in UnityEngine.Object.FindObjectsOfType<DecorationItem>(true))
             {
                 if (item == null || Anchor(item.gameObject) != anchor) continue;
                 if (match != null) return null;
@@ -195,6 +206,42 @@ internal static class ScenePlacementSync
         return null;
     }
 
+    private static string RendererKey(Renderer renderer, Transform root)
+    {
+        string path = "";
+        for (Transform part = renderer.transform; part != root; part = part.parent)
+            path = part.name + "#" + part.GetSiblingIndex() + "/" + path;
+        return Shared.StableHash(path + renderer.GetIl2CppType().Name).ToString("X8");
+    }
+
+    private static bool VisibleRenderer(Renderer renderer) => renderer != null &&
+        (renderer.TryCast<MeshRenderer>() != null || renderer.TryCast<SkinnedMeshRenderer>() != null) &&
+        renderer.enabled && !renderer.forceRenderingOff && renderer.gameObject.activeInHierarchy;
+
+    private static string CaptureVisibleContainerMeshes(GameObject obj)
+    {
+        if (obj.GetComponentInChildren<Container>(true) == null) return "";
+        return string.Concat(obj.GetComponentsInChildren<Renderer>(true).Where(VisibleRenderer)
+            .Select(renderer => RendererKey(renderer, obj.transform)).Distinct().Take(24));
+    }
+
+    private static void RestoreContainerMeshes(GameObject obj, string visible)
+    {
+        if (string.IsNullOrEmpty(visible) || obj.GetComponentInChildren<Container>(true) == null) return;
+        var renderers = obj.GetComponentsInChildren<Renderer>(true);
+        if (renderers.Any(VisibleRenderer)) return;
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i + 8 <= visible.Length; i += 8) keys.Add(visible.Substring(i, 8));
+        foreach (var renderer in renderers)
+        {
+            if (renderer == null || !keys.Contains(RendererKey(renderer, obj.transform))) continue;
+            renderer.forceRenderingOff = false;
+            renderer.enabled = true;
+            if (renderer.transform != obj.transform && renderer.transform.parent.gameObject.activeInHierarchy)
+                renderer.gameObject.SetActive(true);
+        }
+    }
+
     private static bool IsFixedBed(GameObject obj) => obj != null &&
         (obj.GetComponent<DecorationItem>() != null || obj.GetComponent<Placeable>() != null) &&
         obj.GetComponentInParent<SnowShelter>() == null && obj.GetComponentInChildren<SnowShelter>(true) == null &&
@@ -202,7 +249,9 @@ internal static class ScenePlacementSync
 
     internal static bool CanPlace(GameObject obj)
     {
-        if (!MyMod.InOnline() || !IsFixedBed(obj)) return true;
+        if (!MyMod.InOnline() || obj == null) return true;
+        if (obj.GetComponent<Comps.FakeBedDummy>() != null) return false;
+        if (!IsFixedBed(obj)) return true;
         if (!BedRest.IsOccupied(obj.GetComponentInChildren<Bed>(true)) && Id(obj).Length > 0) return true;
         HUDMessage.AddMessage("Освободите кровать перед перестановкой");
         return false;
@@ -223,18 +272,50 @@ internal static class ScenePlacementSync
     private static Move CaptureFurniture(GameObject obj)
     {
         if (!InWorld || obj == null) return null;
-        if (obj.GetComponent<GearItem>()?.m_Bed?.m_Bedroll != null) return null;
+        if (obj.GetComponent<GearItem>()?.m_Bed?.m_Bedroll != null || obj.GetComponent<Comps.FakeBedDummy>() != null ||
+            obj.GetComponent<Comps.DropFakeOnLeave>() != null || obj.GetComponent<Comps.DroppedGearDummy>() != null) return null;
         var decoration = obj.GetComponent<DecorationItem>();
         if (decoration == null && obj.GetComponent<Placeable>() == null) return null;
         string id = Id(obj);
         if (id.Length == 0) return null;
         string parent = decoration != null && decoration.DecorationParent != null ? Id(decoration.DecorationParent.gameObject) : "";
         var move = new Move(id, parent, Pose.From(obj.transform), Guid.NewGuid().ToString("N"), 0, 2,
-            Anchor(obj), Anchor(decoration?.DecorationParent?.gameObject));
+            Anchor(obj), Anchor(decoration?.DecorationParent?.gameObject), Visible: CaptureVisibleContainerMeshes(obj));
         var placeable = obj.GetComponent<Placeable>();
         if (placeable == null || IsFixedBed(obj) || !Guid.TryParseExact(placeable.m_Addressable?.AssetGUID, "N", out _)) return move;
         var scale = obj.transform.localScale;
         return move with { Anchor = "", Asset = placeable.m_Addressable.AssetGUID, AssetName = obj.name, Sx = scale.x, Sy = scale.y, Sz = scale.z };
+    }
+
+    [HarmonyPatch(typeof(DecorationItem), nameof(DecorationItem.OnBreakdown))]
+    private static class DecorationRemoved
+    {
+        private static void Prefix(DecorationItem __instance, out Move __state) => __state = CaptureFurniture(__instance.gameObject);
+
+        private static void Postfix(Move __state, bool __runOriginal)
+        {
+            if (__runOriginal && __state != null)
+                PublishMove(__state with { Removed = true, Parent = "", ParentAnchor = "", Visible = "" });
+        }
+    }
+
+    private static string BreakdownId(BreakDown item)
+    {
+        var position = item.transform.position;
+        string identity = FormattableString.Invariant(
+            $"{GameCompat.StripCloneSuffix(item.name)}|{position.x:F2}|{position.y:F2}|{position.z:F2}");
+        return "breakdown-" + Shared.StableHash(identity).ToString("X8");
+    }
+
+    internal static Action CaptureBreakdown(BreakDown item)
+    {
+        if (!InWorld || item == null || !item.gameObject.scene.IsValid()) return null;
+        var decoration = item.GetComponentInParent<DecorationItem>();
+        var move = decoration != null && (decoration.gameObject == item.gameObject || decoration.m_Breakdown == item)
+            ? CaptureFurniture(decoration.gameObject) : null;
+        if (move == null && string.IsNullOrEmpty(item.GetComponent<ObjectGuid>()?.Get()))
+            move = new Move(BreakdownId(item), "", Pose.From(item.transform), Guid.NewGuid().ToString("N"), 0, 2);
+        return move == null ? null : () => PublishMove(move with { Removed = true, Parent = "", ParentAnchor = "", Visible = "" });
     }
 
     private static void PublishMove(Move move)
@@ -280,9 +361,9 @@ internal static class ScenePlacementSync
             placingFurniture = __state;
         }
 
-        private static void Postfix(PlayerManager __instance, FurniturePlacement __state)
+        private static void Postfix(PlayerManager __instance, FurniturePlacement __state, bool __runOriginal)
         {
-            if (__state == null || (!__state.Confirmed && __instance.m_ObjectToPlace == __state.Object)) return;
+            if (!__runOriginal || __state == null || (!__state.Confirmed && __instance.m_ObjectToPlace == __state.Object)) return;
             if (__state.Moves.Length == 0)
             {
                 PublishMove(CaptureFurniture(__state.Object));
@@ -382,6 +463,7 @@ internal static class ScenePlacementSync
         if (!HasFurniturePose(move) || string.IsNullOrEmpty(move.Id) || move.Id.Length > 100 ||
             (move.Anchor?.Length ?? 0) > 8 || (move.ParentAnchor?.Length ?? 0) > 8 ||
             move.Parent == null || move.Parent.Length > 100 || move.Id == move.Parent || move.Version != 2 ||
+            (move.Visible?.Length ?? 0) > 192 ||
             !Guid.TryParseExact(move.Operation, "N", out _) || !ValidFurnitureAsset(move)) return;
         var moves = GetScene(area);
         string ancestor = move.Parent;
@@ -394,6 +476,12 @@ internal static class ScenePlacementSync
         if (!move.RegisterOnly && !AcceptedOperations.Contains(move.Operation))
         {
             if (moves.Count >= 2048 && !moves.ContainsKey(move.Id)) return;
+            if (!move.Removed && moves.Values.Any(previous => previous.Removed &&
+                (previous.Id == move.Id || !string.IsNullOrEmpty(move.Anchor) && previous.Anchor == move.Anchor)))
+            {
+                AckMove(sender, area, move.Operation);
+                return;
+            }
             if (moves.TryGetValue(move.Id, out var existing) &&
                 existing with { Operation = move.Operation, Revision = move.Revision } == move)
             {
@@ -450,6 +538,16 @@ internal static class ScenePlacementSync
         if (!string.IsNullOrEmpty(move.Asset) && !ValidFurnitureAsset(move)) return true;
         var obj = !string.IsNullOrEmpty(move.Asset) ? lookup.Find(move.Id)?.gameObject : null;
         obj ??= Find(move.Id, move.Anchor, lookup);
+        if (move.Removed)
+        {
+            if (obj == null) return false;
+            var activePlayer = GameManager.GetPlayerManagerComponent();
+            if (activePlayer != null && (activePlayer.m_ObjectToPlace == obj || activePlayer.m_ObjectToPlaceDecorationItem?.gameObject == obj)) return false;
+            var removedDecoration = obj.GetComponent<DecorationItem>();
+            if (removedDecoration != null && obj.activeSelf) removedDecoration.RemoveFromHierarchy();
+            obj.SetActive(false);
+            return true;
+        }
         if (obj == null && !string.IsNullOrEmpty(move.Asset) && ValidFurnitureAsset(move))
         {
             if (move.Parent.Length > 0 && Find(move.Parent, move.ParentAnchor, lookup) == null) return false;
@@ -499,6 +597,7 @@ internal static class ScenePlacementSync
                 decoration.SetParent(parentDecoration);
         }
         obj.transform.SetPositionAndRotation(move.Pose.Position, move.Pose.Rotation);
+        RestoreContainerMeshes(obj, move.Visible);
         return true;
     }
 
@@ -1302,6 +1401,7 @@ internal static class ScenePlacementSync
                 using var waterReady = MakeServerPacket(13, area, "", 0, 0);
                 ServerSend.SendUDPData(from, waterReady);
             }
+            else if (kind == 14) GearPlacementSync.Accept(area, key, data, from);
             else if (kind == 12) PublishWaterLevel(area, JsonSerializer.Deserialize<SceneWaterSync.Level>(data));
             else if (kind == 11 && SceneRepairSync.Accept(area, data)) SendToPeers(11, area, data);
             else if (kind == 10) DeathRespawn.ReceiveClient(from, area, key, data);
@@ -1343,7 +1443,9 @@ internal static class ScenePlacementSync
         if (!InWorld || area != MyMod.level_guid || data.Length > (kind == 9 ? 10000 : 1100)) return;
         try
         {
-            if (kind == 10) DeathRespawn.Receive(area, key, data);
+            if (kind == 14 || kind == 15) GearPlacementSync.Receive(key, data, reply: kind == 15);
+            else if (kind == 16) GearPlacementSync.MissingPreview(key);
+            else if (kind == 10) DeathRespawn.Receive(area, key, data);
             else if (kind == 11) SceneRepairSync.Receive(area, data);
             else if (kind == 12) SceneWaterSync.Receive(area, JsonSerializer.Deserialize<SceneWaterSync.Level>(data));
             else if (kind == 13) SceneWaterSync.SnapshotComplete(area);
@@ -1365,6 +1467,22 @@ internal static class ScenePlacementSync
     }
 
     internal static void SendRescueToHost(int subject, string data) => SendToHost(10, MyMod.level_guid, data, subject);
+
+    internal static void SendDroppedMove(string area, int key, string data) => SendToHost(14, area, data, key);
+
+    internal static void BroadcastDroppedMove(string area, int key, string data) => SendToPeers(14, area, data, key: key);
+
+    internal static void ReplyDroppedMove(int guest, string area, int key, string data)
+    {
+        using var packet = MakeServerPacket(15, area, data, guest, key);
+        ServerSend.SendUDPData(guest, packet);
+    }
+
+    internal static void ReplyMissingPreview(int guest, string area, int key)
+    {
+        using var packet = MakeServerPacket(16, area, "", guest, key);
+        ServerSend.SendUDPData(guest, packet);
+    }
 
     internal static void PublishWaterLevel(string area, SceneWaterSync.Level level)
     {
