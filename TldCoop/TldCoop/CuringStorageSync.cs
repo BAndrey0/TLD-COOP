@@ -116,7 +116,7 @@ internal static class CuringStorageSync
         {
             if (current != __instance || pending == null) return;
             closing = true;
-            Tick();
+            Commit();
         }
     }
 

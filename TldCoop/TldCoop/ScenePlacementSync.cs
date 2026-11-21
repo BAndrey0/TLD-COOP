@@ -66,6 +66,7 @@ internal static class ScenePlacementSync
     private static FurniturePlacement placingFurniture;
     private static bool creatingReplica;
     private static float nextFurnitureApply;
+    private static float furnitureRetryDelay = 1f;
     private static bool furnitureSectorsDirty;
     private static readonly HashSet<string> FurnitureApplyWarnings = new();
     private static readonly Dictionary<string, int> FurnitureCreateAttempts = new();
@@ -631,7 +632,12 @@ internal static class ScenePlacementSync
                 MelonLoader.MelonLogger.Msg($"[Furniture] Rejected stale move scene={area} id={move.Id} player={sender} expected={move.BaseRevision} actual={previous?.Revision ?? 0}");
                 if (previous != null)
                 {
-                    if (sender == 0) Unapplied[previous.Id] = previous;
+                    if (sender == 0)
+                    {
+                        Unapplied[previous.Id] = previous;
+                        furnitureRetryDelay = 1f;
+                        nextFurnitureApply = 0f;
+                    }
                     else
                     {
                         using var correction = MakeServerPacket(21, area, JsonSerializer.Serialize(previous), 0, 0);
@@ -696,6 +702,8 @@ internal static class ScenePlacementSync
         if (LatestRevision.TryGetValue(move.Id, out long latest) && latest >= move.Revision) return;
         LatestRevision[move.Id] = move.Revision;
         Unapplied[move.Id] = move;
+        furnitureRetryDelay = 1f;
+        nextFurnitureApply = 0f;
     }
 
     private static bool HasFurniturePose(Move move) => move?.Pose is { Valid: true } pose &&
@@ -1814,14 +1822,18 @@ internal static class ScenePlacementSync
             if (pair.Value.Expires <= now) ReceivePot(area, pair.Key.Owner, pair.Key.Key, null);
         if (furnitureReady && Unapplied.Count > 0 && now >= nextFurnitureApply)
         {
-            nextFurnitureApply = now + 1f;
+            bool progressed = false;
             var lookup = new PlacementLookup();
             foreach (var pair in Unapplied.OrderBy(pair => !pair.Value.Removed)
                 .ThenBy(pair => QueuedParentDepth(pair.Value)).ToArray())
             {
                 try
                 {
-                    if (Apply(pair.Value, lookup)) Unapplied.Remove(pair.Key);
+                    if (Apply(pair.Value, lookup))
+                    {
+                        Unapplied.Remove(pair.Key);
+                        progressed = true;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1829,6 +1841,8 @@ internal static class ScenePlacementSync
                         MelonLoader.MelonLogger.Warning($"[Furniture] Apply failed id={pair.Key} scene={area} {ex.Message}");
                 }
             }
+            furnitureRetryDelay = progressed ? 1f : Mathf.Min(furnitureRetryDelay * 2f, 30f);
+            nextFurnitureApply = now + furnitureRetryDelay;
             if (furnitureSectorsDirty)
             {
                 BoxSectorManager.s_Instance?.UpdateSectors();
@@ -1865,6 +1879,8 @@ internal static class ScenePlacementSync
     {
         furnitureReplays = 2;
         replayFurnitureAt = Time.realtimeSinceStartup + 1f;
+        furnitureRetryDelay = 1f;
+        nextFurnitureApply = 0f;
         nextRequest = 0;
     }
 
@@ -2046,6 +2062,8 @@ internal static class ScenePlacementSync
                 {
                     LatestRevision[move.Id] = move.Revision;
                     Unapplied[move.Id] = move;
+                    furnitureRetryDelay = 1f;
+                    nextFurnitureApply = 0f;
                     HUDMessage.AddMessage("Мебель уже изменил другой игрок");
                 }
             }
