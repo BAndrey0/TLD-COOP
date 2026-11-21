@@ -65,6 +65,7 @@ internal static class ScenePlacementSync
     private static bool creatingReplica;
     private static float nextFurnitureApply;
     private static readonly HashSet<string> FurnitureApplyWarnings = new();
+    private static readonly Dictionary<string, int> FurnitureCreateAttempts = new();
     private sealed record Pot(string Gear, Pose Pose, Pose Slot, string Meshes, string Food, string Mode, int Minutes, bool CanTake, int Liquid, string NativeHover, float Liters = 0f);
     private sealed record GearTransfer(Guid Id, int Requester, string Gear, string Json, float Heat, int TimesHeated);
     private sealed record WaterTransfer(Guid Id, int Requester, float Liters, bool Potable);
@@ -472,7 +473,9 @@ internal static class ScenePlacementSync
             {
                 if (FurnitureApplyWarnings.Add(move.Id))
                     MelonLoader.MelonLogger.Warning("[Furniture] Could not create " + move.AssetName + ": " + ex.Message);
-                return true;
+                FurnitureCreateAttempts.TryGetValue(move.Id, out int attempts);
+                FurnitureCreateAttempts[move.Id] = ++attempts;
+                return attempts >= 5;
             }
             finally { creatingReplica = false; }
         }
@@ -1232,6 +1235,7 @@ internal static class ScenePlacementSync
             Unapplied.Clear();
             LatestRevision.Clear();
             FurnitureApplyWarnings.Clear();
+            FurnitureCreateAttempts.Clear();
             nextFurnitureApply = 0f;
             scene = area;
             ContainerLockSync.Prepare(area);

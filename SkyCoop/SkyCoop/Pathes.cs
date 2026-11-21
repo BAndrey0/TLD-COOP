@@ -4744,6 +4744,12 @@ public class Pathes
 	[HarmonyPatch(typeof(SaveGameSystem), "LoadSceneData")]
 	public static class SaveGameSystemPatch_LoadSceneData
 	{
+		[System.ThreadStatic] internal static int Depth;
+
+		private static void Prefix() => Depth++;
+
+		private static void Finalizer() => Depth--;
+
 		public static void Postfix(string name)
 		{
 			if (MyMod.CrazyPatchesLogger)
@@ -4754,6 +4760,25 @@ public class Pathes
 			}
 			MelonLogger.Msg(System.ConsoleColor.Yellow, "[Scene Load] Saved data for scene is loaded!");
 			MyMod.UpdateEverything = 2;
+		}
+	}
+
+	[HarmonyPatch(typeof(MissionObjectIdentifier), nameof(MissionObjectIdentifier.AddMissionComponentForSaveManagedItem))]
+	private static class RestoreSceneMissionComponent
+	{
+		private static bool Prefix(GameObject smObject, string missionObjectSerialized)
+		{
+			return SaveGameSystemPatch_LoadSceneData.Depth == 0 || ExperienceCompat.IsStoryMode() ||
+				(smObject != null && !string.IsNullOrWhiteSpace(missionObjectSerialized));
+		}
+
+		private static System.Exception Finalizer(GameObject smObject, System.Exception __exception, ref MissionObjectIdentifier __result)
+		{
+			if (__exception is not Il2CppInterop.Runtime.Il2CppException || SaveGameSystemPatch_LoadSceneData.Depth == 0 || ExperienceCompat.IsStoryMode() ||
+				!__exception.Message.Contains("NullReferenceException")) return __exception;
+			__result = smObject != null ? smObject.GetComponent<MissionObjectIdentifier>() : null;
+			MelonLogger.Warning("[Scene Load] Skipped an invalid saved mission component on " + (smObject != null ? smObject.name : "<missing object>"));
+			return null;
 		}
 	}
 
