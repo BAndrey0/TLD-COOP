@@ -39,7 +39,7 @@ public class ClientHandle
 		{
 			packet.Write(ClientUser.myId);
 			packet.Write(MyMod.MyChatName);
-			packet.Write("0.16.36");
+			packet.Write("0.16.37");
 			packet.Write(Supporters.MyID);
 			packet.Write(Supporters.ConfiguratedBenefits);
 			packet.Write(ModsValidation.GetModsHash(Force: true, ModsWhiteList).m_Hash);
@@ -1075,9 +1075,10 @@ public class ClientHandle
 
 	public static void USEOPENABLE(Packet _packet)
 	{
+		string scene = _packet.ReadString();
 		string gUID = _packet.ReadString();
 		bool state = _packet.ReadBool();
-		Shared.ChangeOpenableThingState(MyMod.level_guid, gUID, state);
+		if (scene == MyMod.level_guid) Shared.ChangeOpenableThingState(scene, gUID, state);
 	}
 
 	public static void TRYDIAGNISISPLAYER(Packet _packet)

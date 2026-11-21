@@ -94,6 +94,9 @@ public class DataStr
 		public float m_FlareRemainingMinutes = -1f;
 		public float m_FlareDropPhase;
 		public bool m_FlarePickupSnapshot;
+		public float m_FoodCondition = -1f;
+		public float m_FoodHeat;
+		public int m_FoodReheats;
 		internal ExtraDataForDroppedGear Copy() => (ExtraDataForDroppedGear)MemberwiseClone();
 
 		public string m_Dropper = "";
@@ -110,6 +113,7 @@ public class DataStr
 	public class AnimalArrow
 	{
 		public float m_Condition = 100f;
+		public string m_GearName = "GEAR_Arrow";
 
 		public Vector3 m_Position = new Vector3(0f, 0f, 0f);
 

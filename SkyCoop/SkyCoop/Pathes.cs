@@ -27,12 +27,28 @@ public class Pathes
 	[HarmonyPatch(typeof(GearItem), "Drop")]
 	public class GearItemDrop
 	{
+		public readonly record struct FoodState(float Condition, float Heat, int Reheats);
+		internal static FoodState? CaptureFood(GearItem item)
+		{
+			var food = item != null ? item.m_FoodItem : null;
+			return food == null ? null : new FoodState(item.GetNormalizedCondition(), food.m_HeatPercent, food.m_NumTimesHeatedUp);
+		}
+
+		internal static void RestoreFood(GearItem item, FoodState? state)
+		{
+			if (state is not { } previous || item == null || item.m_FoodItem == null) return;
+			if (previous.Condition > 0f) item.m_WornOut = false;
+			item.SetNormalizedHP(previous.Condition, roundToWholeNumber: false);
+			item.m_FoodItem.m_HeatPercent = previous.Heat;
+			item.m_FoodItem.m_NumTimesHeatedUp = previous.Reheats;
+		}
 		private static int ShouldDrop;
 
 		private static int Had;
 
-		public static bool Prefix(GearItem __instance, int numUnits)
+		public static bool Prefix(GearItem __instance, int numUnits, out FoodState? __state)
 		{
+			__state = CaptureFood(__instance);
 			if (PlayerManager_Throw.TrackedThrowDepth > 0 && ThrownGearSync.Supports(__instance)) return true;
 			if (MyMod.CrazyPatchesLogger)
 			{
@@ -62,8 +78,9 @@ public class Pathes
 			return true;
 		}
 
-		public static void Postfix(GearItem __instance, int numUnits, GearItem __result)
+		public static void Postfix(GearItem __instance, int numUnits, GearItem __result, FoodState? __state, bool __runOriginal)
 		{
+			if (!__runOriginal) return;
 			if (PlayerManager_Throw.TrackedThrowDepth > 0 && ThrownGearSync.Supports(__instance))
 			{
 				TrackThrownGear(__result);
@@ -82,6 +99,7 @@ public class Pathes
 			}
 			if (MyMod.InOnline() && __instance.gameObject.GetComponent<Comps.IgnoreDropOverride>() == null)
 			{
+				RestoreFood(__instance, __state);
 				if (!(__instance.gameObject.GetComponent<Bed>() != null) || __instance.gameObject.GetComponent<Bed>().m_BedRollState != BedRollState.Placed)
 				{
 					int variant = 0;
@@ -234,6 +252,7 @@ public class Pathes
 			var placedPoint = __instance.m_LastGearPlacePoint;
 			if (placedPoint != null && placedPoint.m_FireToAttach != null && placedPoint.GetPlacedGear()?.gameObject == saveObj) return;
 			var placedGear = saveObj.GetComponent<GearItem>();
+			GearItemDrop.RestoreFood(placedGear, GearPlacementSync.ConfirmedFood);
 			if (placedGear?.m_Bed?.m_Bedroll == null &&
 				(saveObj.GetComponent<DecorationItem>() != null || (placedGear == null &&
 				saveObj.GetComponent<Il2CppTLD.Placement.Placeable>() != null)))
@@ -807,7 +826,8 @@ public class Pathes
 			Transform playerTransform = GameManager.GetPlayerTransform();
 			MelonLogger.Msg("[BowItem] Arrow Fire! " + __instance.m_GearArrow.gameObject.name);
 			DataStr.ShootSync shootSync = new DataStr.ShootSync();
-			shootSync.m_projectilename = "GEAR_Arrow";
+			shootSync.m_projectilename = __instance.m_GearArrow.GetGearName();
+			shootSync.m_skill = __instance.m_GearArrow.GetNormalizedCondition();
 			shootSync.m_position = playerTransform.TransformPoint(transform.position);
 			shootSync.m_rotation = playerTransform.rotation * transform.rotation;
 			shootSync.m_sceneguid = MyMod.level_guid;
@@ -849,6 +869,8 @@ public class Pathes
 					ArrowSaveData arrowSaveData = __instance.Serialize();
 					DataStr.AnimalArrow item = new DataStr.AnimalArrow
 					{
+						m_Condition = __instance.m_GearItem != null ? __instance.m_GearItem.GetNormalizedCondition() * 100f : 0f,
+						m_GearName = __instance.m_GearItem != null ? __instance.m_GearItem.GetGearName() : "GEAR_Arrow",
 						m_Position = arrowSaveData.m_LocalPosition,
 						m_Angle = arrowSaveData.m_LocalAngles,
 						m_Depth = arrowSaveData.m_EmbeddedDepth,
@@ -5737,8 +5759,70 @@ public class Pathes
 	{
 		private static void Prefix(LoadScene __instance)
 		{
-			if (MyMod.InOnline())
-				MelonLogger.Msg($"[Scene transition] {MyMod.level_name} -> {__instance.GetSceneToLoad()} exit={__instance.m_ExitPointName} guid={__instance.m_GUID} at={GameManager.GetPlayerTransform()?.position}");
+			if (!MyMod.InOnline()) return;
+			var player = GameManager.GetPlayerManagerComponent();
+			if (player != null && player.GetControlMode() == PlayerControlMode.SafehouseCustomization)
+			{
+				if (player.IsInMeshPlacementMode()) player.CancelPlacementMode();
+				var safehouse = UnityEngine.Object.FindObjectOfType<SafehouseManager>();
+				if (safehouse != null && safehouse.IsCustomizing()) safehouse.StopCustomizing();
+				if (player.GetControlMode() == PlayerControlMode.SafehouseCustomization)
+					player.ReturnToNormalControlMode(PlayerControlMode.SafehouseCustomization);
+			}
+			MelonLogger.Msg($"[Scene transition] {MyMod.level_name} -> {__instance.GetSceneToLoad()} exit={__instance.m_ExitPointName} guid={__instance.m_GUID} at={GameManager.GetPlayerTransform()?.position}");
+		}
+	}
+
+	[HarmonyPatch(typeof(SafehouseManager), nameof(SafehouseManager.StopCustomizing))]
+	private static class RestoreSafehouseControls
+	{
+		private static void Postfix(SafehouseManager __instance)
+		{
+			if (!MyMod.InOnline() || __instance.IsCustomizing()) return;
+			var player = GameManager.GetPlayerManagerComponent();
+			if (player != null && player.GetControlMode() == PlayerControlMode.SafehouseCustomization)
+				player.ReturnToNormalControlMode(PlayerControlMode.SafehouseCustomization);
+		}
+	}
+
+	[HarmonyPatch(typeof(SafehouseManager), nameof(SafehouseManager.ConfirmSafehouseExit))]
+	private static class CompleteSafehouseExit
+	{
+		private static Panel_Confirmation.CallbackDelegate pending;
+		private static string scene;
+		private static int frame;
+
+		private static void Prefix(SafehouseManager __instance, ref Panel_Confirmation.CallbackDelegate __0)
+		{
+			if (!MyMod.InOnline() || __0 == null) return;
+			var callback = __0;
+			bool invoked = false;
+			__0 = (System.Action)(() =>
+			{
+				if (invoked) return;
+				invoked = true;
+				var player = GameManager.GetPlayerManagerComponent();
+				if (player != null && player.IsInMeshPlacementMode()) player.CancelPlacementMode();
+				if (__instance != null && __instance.IsCustomizing()) __instance.StopCustomizing();
+				if (player != null && player.GetControlMode() == PlayerControlMode.SafehouseCustomization)
+					player.ReturnToNormalControlMode(PlayerControlMode.SafehouseCustomization);
+				pending = callback;
+				scene = MyMod.level_guid;
+				frame = Time.frameCount;
+			});
+		}
+
+		[HarmonyPatch(typeof(SafehouseManager), nameof(SafehouseManager.Update))]
+		internal static class ContinueAfterConfirmation
+		{
+			private static void Postfix()
+			{
+				if (pending == null || Time.frameCount == frame) return;
+				var callback = pending;
+				pending = null;
+				if (MyMod.InOnline() && scene == MyMod.level_guid && !MyMod.LoadingScreenIsOn)
+					callback.Invoke();
+			}
 		}
 	}
 

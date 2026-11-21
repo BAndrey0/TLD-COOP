@@ -33,9 +33,9 @@ internal class ServerHandle
 		}
 		else if (text2 != "RCON")
 		{
-			if (text2 != "0.16.36")
+			if (text2 != "0.16.37")
 			{
-				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.36");
+				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.37");
 				Shared.SendMessageToChat(new DataStr.MultiplayerChatMessage
 				{
 					m_Type = 0,
@@ -932,7 +932,7 @@ internal class ServerHandle
 		{
 			string key = item.Key;
 			bool value = item.Value;
-			ServerSend.USEOPENABLE(_fromClient, key, value);
+			ServerSend.USEOPENABLE(_fromClient, scene, key, value);
 		}
 	}
 
@@ -1141,6 +1141,7 @@ internal class ServerHandle
 		string scene = _packet.ReadString();
 		string gUID = _packet.ReadString();
 		bool state = _packet.ReadBool();
+		if (_fromClient <= 0 || _fromClient >= MyMod.playersData.Count || MyMod.playersData[_fromClient]?.m_LevelGuid != scene) return;
 		Shared.ChangeOpenableThingState(scene, gUID, state);
 	}
 

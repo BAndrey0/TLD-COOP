@@ -526,8 +526,16 @@ public class Comps
 		{
 			for (int i = 0; i < m_Arrows.Count; i++)
 			{
-				MyMod.SendDropItem(UnityEngine.Object.Instantiate(MyMod.GetGearItemObject("GEAR_Arrow"), Vector3.zero, Quaternion.identity).GetComponent<GearItem>(), 0, 0, samepose: false, 0, m_Animal);
+				var arrow = m_Arrows[i];
+				var prefab = MyMod.GetGearItemObject(arrow.m_GearName);
+				if (prefab == null) continue;
+				var gear = UnityEngine.Object.Instantiate(prefab, Vector3.zero, Quaternion.identity).GetComponent<GearItem>();
+				gear.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
+				gear.SetNormalizedHP(float.IsFinite(arrow.m_Condition) ? Mathf.Clamp01(arrow.m_Condition / 100f) : 0f,
+					roundToWholeNumber: false);
+				MyMod.SendDropItem(gear, 0, 0, samepose: false, 0, m_Animal);
 			}
+			m_Arrows.Clear();
 		}
 
 		private void Update()

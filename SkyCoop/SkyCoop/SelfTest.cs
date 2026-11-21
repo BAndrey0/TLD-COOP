@@ -754,6 +754,8 @@ public static class SelfTest
 			if (door == null || door.GetSceneToLoad() != "RuralRegion") continue;
 			ScenePlacementSync.ProbeFurnitureInCurrentRoom();
 			ProbeCuringDrop();
+			try { MyMod.ProbeFoodDrop(); CuringStorageSync.Probe(); ProbeRecoveredArrow(); }
+			catch (Exception ex) { MelonLogger.Error("[Item state probe] " + ex); }
 			furnitureExited = true;
 			furnitureReadyAt = Time.realtimeSinceStartup + 8f;
 			MelonLogger.Msg("[Furniture crash probe] Exiting " + MyMod.level_name + " through " + door.name);
@@ -763,6 +765,30 @@ public static class SelfTest
 		furnitureTestFinished = true;
 		MelonLogger.Warning("[Furniture crash probe] No exit to RuralRegion in " + MyMod.level_name);
 		Application.Quit();
+	}
+
+	private static void ProbeRecoveredArrow()
+	{
+		var corpse = new GameObject("Arrow recovery probe");
+		corpse.transform.position = GameManager.GetPlayerTransform().position;
+		var record = corpse.AddComponent<Comps.AnimalUpdates>();
+		record.m_Animal = corpse;
+		var before = new HashSet<int>(MyMod.DroppedGearsObjs.Keys);
+		record.m_Arrows.Add(new DataStr.AnimalArrow { m_Condition = 42f });
+		try
+		{
+			record.DropArrows();
+			foreach (int key in MyMod.DroppedGearsObjs.Keys)
+			{
+				if (before.Contains(key)) continue;
+				var saved = MPSaveManager.RequestSpecificGear(key, MyMod.level_guid, Remove: false);
+				if (saved?.m_GearName != "GEAR_Arrow") continue;
+				var proxy = Utils.DeserializeObject<GearItemSaveDataProxy>(saved.m_Json);
+				MelonLogger.Msg($"[Arrow recovery probe] condition={proxy.m_NormalizedCondition:F3} removedFromAnimal={record.m_Arrows.Count == 0}");
+				break;
+			}
+		}
+		finally { UnityEngine.Object.Destroy(corpse); }
 	}
 
 	private static void ProbeCuringDrop()

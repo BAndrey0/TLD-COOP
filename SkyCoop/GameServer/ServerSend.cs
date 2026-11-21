@@ -1482,9 +1482,10 @@ internal class ServerSend
 		SendTCPData(_toClient, packet);
 	}
 
-	public static void USEOPENABLE(int _toClient, string _GUID, bool state, bool toAll = false)
+	public static void USEOPENABLE(int _toClient, string scene, string _GUID, bool state, bool toAll = false)
 	{
 		using Packet packet = new Packet(101);
+		packet.Write(scene);
 		packet.Write(_GUID);
 		packet.Write(state);
 		packet.Write(_toClient);
@@ -1494,7 +1495,7 @@ internal class ServerSend
 		}
 		else
 		{
-			SendUDPDataToAll(packet);
+			SendUDPDataToAll(packet, scene);
 		}
 	}
 
@@ -1928,7 +1929,7 @@ internal class ServerSend
 			}
 		}
 		packet.WriteUnicodeString(MyMod.CustomServerName);
-		packet.Write("0.16.36");
+		packet.Write("0.16.37");
 		packet.Write(num);
 		packet.Write(maxPlayers);
 		packet.WriteUnicodeString(GetStatusJson(text));

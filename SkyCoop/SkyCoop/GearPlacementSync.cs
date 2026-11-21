@@ -42,18 +42,21 @@ internal static class GearPlacementSync
     private static Preview preview;
     private static GameObject confirming;
     private static Pose confirmedPose;
+    internal static Pathes.GearItemDrop.FoodState? ConfirmedFood { get; private set; }
     internal static bool Busy => preview != null;
     internal static bool IsConfirming(GameObject obj) => obj != null && confirming == obj;
     internal static void BeginConfirmation(GameObject obj)
     {
         confirming = obj;
         confirmedPose = obj != null ? Pose.From(obj.transform) : null;
+        ConfirmedFood = obj != null ? Pathes.GearItemDrop.CaptureFood(obj.GetComponent<GearItem>()) : null;
     }
     internal static void EndConfirmation(GameObject obj)
     {
         if (confirming != obj) return;
         confirming = null;
         confirmedPose = null;
+        ConfirmedFood = null;
     }
 
     internal static bool Request(Comps.DroppedGearDummy dummy)

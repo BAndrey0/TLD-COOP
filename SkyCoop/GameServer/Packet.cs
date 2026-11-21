@@ -455,6 +455,9 @@ public class Packet : IDisposable
 		Write(obj.m_FlareRemainingMinutes);
 		Write(obj.m_FlareDropPhase);
 		Write(obj.m_FlarePickupSnapshot);
+		Write(obj.m_FoodCondition);
+		Write(obj.m_FoodHeat);
+		Write(obj.m_FoodReheats);
 	}
 
 	public void Write(DataStr.AffictionSync obj)
@@ -472,6 +475,7 @@ public class Packet : IDisposable
 		Write(Arrow.m_Angle);
 		Write(Arrow.m_Depth);
 		Write(Arrow.m_LocaName);
+		Write(Arrow.m_GearName);
 	}
 
 	public void Write(List<DataStr.AnimalArrow> Arrows, int Count)
@@ -1109,7 +1113,10 @@ public class Packet : IDisposable
 			m_ExpeditionNote = ReadUnicodeString(),
 			m_FlareRemainingMinutes = ReadFloat(),
 			m_FlareDropPhase = ReadFloat(),
-			m_FlarePickupSnapshot = ReadBool()
+			m_FlarePickupSnapshot = ReadBool(),
+			m_FoodCondition = ReadFloat(),
+			m_FoodHeat = ReadFloat(),
+			m_FoodReheats = ReadInt()
 		};
 	}
 
@@ -1132,7 +1139,8 @@ public class Packet : IDisposable
 			m_Position = ReadVector3(),
 			m_Angle = ReadVector3(),
 			m_Depth = ReadFloat(),
-			m_LocaName = ReadString()
+			m_LocaName = ReadString(),
+			m_GearName = ReadString()
 		};
 	}
 

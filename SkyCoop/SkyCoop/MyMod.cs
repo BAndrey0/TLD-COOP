@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.36";
+		public const string Version = "0.16.37";
 
 		public const string DownloadLink = null;
 
@@ -508,6 +508,7 @@ public class MyMod : MelonMod
 		if (lamp == null || extra == null)
 		{
 			gear.DeserializeFromJson(json);
+			RestoreDroppedFood(gear, extra);
 			return;
 		}
 		var previousLamp = loadingDroppedLamp;
@@ -528,6 +529,17 @@ public class MyMod : MelonMod
 			loadingLampHours = previousHours;
 			loadingLampFuelApplied = previousApplied;
 		}
+	}
+
+	private static void RestoreDroppedFood(GearItem gear, DataStr.ExtraDataForDroppedGear extra)
+	{
+		if (extra == null || !float.IsFinite(extra.m_FoodCondition) || extra.m_FoodCondition < 0f ||
+			gear.m_FoodItem == null) return;
+		float condition = Mathf.Clamp01(extra.m_FoodCondition);
+		if (condition > 0f) gear.m_WornOut = false;
+		gear.SetNormalizedHP(condition, roundToWholeNumber: false);
+		if (float.IsFinite(extra.m_FoodHeat)) gear.m_FoodItem.m_HeatPercent = Mathf.Max(0f, extra.m_FoodHeat);
+		gear.m_FoodItem.m_NumTimesHeatedUp = System.Math.Max(0, extra.m_FoodReheats);
 	}
 
 	public static System.Collections.Generic.Dictionary<string, float> BooksResearched = new System.Collections.Generic.Dictionary<string, float>();
@@ -4886,15 +4898,18 @@ public class MyMod : MelonMod
 			}
 			return;
 		}
-		if (shoot.m_projectilename == "GEAR_Arrow")
+		if (shoot.m_projectilename is "GEAR_Arrow" or "GEAR_ArrowHardened")
 		{
-			GameObject gameObject = UnityEngine.Object.Instantiate(GetGearItemObject("GEAR_Arrow"), shoot.m_position, shoot.m_rotation);
+			var prefab = GetGearItemObject(shoot.m_projectilename);
+			if (prefab == null) return;
+			GameObject gameObject = UnityEngine.Object.Instantiate(prefab, shoot.m_position, shoot.m_rotation);
 			GearItem component = gameObject.GetComponent<GearItem>();
-			gameObject.name = "GEAR_Arrow";
+			gameObject.name = shoot.m_projectilename;
 			gameObject.transform.parent = null;
 			component.m_InPlayerInventory = false;
-			component.m_StackableItem.m_Units = 1;
-			component.m_CurrentHP = 100f;
+			if (component.m_StackableItem != null) component.m_StackableItem.m_Units = 1;
+			component.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
+			component.m_CurrentHP = component.m_GearItemData.MaxHP * Mathf.Clamp01(shoot.m_skill);
 			component.m_ArrowItem.SetPlacementHelperEnabled(enabled: true);
 			gameObject.AddComponent<Comps.DestoryArrowOnHit>();
 			Utils.ChangeLayersForGearItem(gameObject, 17);
@@ -6990,12 +7005,52 @@ public class MyMod : MelonMod
 	private static void InitializePickedDrop(GearItem gear, DataStr.ExtraDataForDroppedGear extra)
 	{
 		bool flare = ThrownFlareSync.IsFlare(gear);
-		gear.m_LastUpdatedTODHours = flare ? GameManager.GetTimeOfDayComponent().GetHoursPlayedNotPaused() : 0f;
+		bool food = gear.m_FoodItem != null;
+		float now = GameManager.GetTimeOfDayComponent().GetHoursPlayedNotPaused();
+		int elapsed = food && extra != null ? System.Math.Max(0, MinutesFromStartServer - extra.m_DroppedTime) : 0;
+		gear.m_LastUpdatedTODHours = flare || food ? now : 0f;
+		if (food) gear.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
 		gear.ManualStart();
 		if (flare)
 			ThrownFlareSync.ApplyPickupBurn(gear, extra);
 		else
+		{
+			if (food)
+			{
+				RestoreDroppedFood(gear, extra);
+				gear.m_LastUpdatedTODHours = now - elapsed / 60f;
+				if (elapsed == 0) return;
+			}
 			gear.ManualUpdate();
+		}
+	}
+
+	internal static void ProbeFoodDrop()
+	{
+		foreach (string name in new[] { "GEAR_CookedPorridge", "GEAR_CookedMeatDeer" })
+		{
+			var prefab = GetGearItemObject(name);
+			if (prefab == null) continue;
+			var original = UnityEngine.Object.Instantiate(prefab, GameManager.GetPlayerTransform().position, Quaternion.identity).GetComponent<GearItem>();
+			var copy = UnityEngine.Object.Instantiate(prefab, original.transform.position, Quaternion.identity).GetComponent<GearItem>();
+			try
+			{
+				original.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
+				original.m_BeenInPlayerInventory = true;
+				original.SetNormalizedHP(.72f, roundToWholeNumber: false);
+				original.m_FoodItem.m_HeatPercent = .8f;
+				var extra = new DataStr.ExtraDataForDroppedGear { m_DroppedTime = MinutesFromStartServer,
+					m_FoodCondition = original.GetNormalizedCondition(), m_FoodHeat = original.m_FoodItem.m_HeatPercent };
+				DeserializeDroppedGear(copy, original.SerializeToString(), extra);
+				InitializePickedDrop(copy, extra);
+				MelonLogger.Msg($"[Food drop probe] {name} source={extra.m_FoodCondition:F3} condition={copy.GetNormalizedCondition():F3} heat={copy.m_FoodItem.m_HeatPercent:F3}");
+			}
+			finally
+			{
+				UnityEngine.Object.Destroy(original.gameObject);
+				UnityEngine.Object.Destroy(copy.gameObject);
+			}
+		}
 	}
 
 	private static void AddPickedBedroll(GearItem gear)
@@ -7773,6 +7828,12 @@ public class MyMod : MelonMod
 		extraDataForDroppedGear.m_Dropper = MyChatName;
 		extraDataForDroppedGear.m_DroppedTime = MinutesFromStartServer - num3;
 		extraDataForDroppedGear.m_Variant = variant;
+		if (gear.m_FoodItem != null)
+		{
+			extraDataForDroppedGear.m_FoodCondition = gear.GetNormalizedCondition();
+			extraDataForDroppedGear.m_FoodHeat = gear.m_FoodItem.m_HeatPercent;
+			extraDataForDroppedGear.m_FoodReheats = gear.m_FoodItem.m_NumTimesHeatedUp;
+		}
 		extraDataForDroppedGear.m_PhotoGUID = text;
 		if (text3 != "")
 		{
@@ -7970,6 +8031,18 @@ public class MyMod : MelonMod
 			}
 			if (component.IsOpen() != openableThing.Value)
 			{
+				var transmitter = component.GetComponentInParent<Il2CppInteractiveObjects.Transmitter>();
+				if (transmitter == null)
+					foreach (var item in UnityEngine.Object.FindObjectsOfType<Il2CppInteractiveObjects.Transmitter>())
+						if (item != null && item.m_SwitchHandle == component) { transmitter = item; break; }
+				if (transmitter != null)
+				{
+					component.m_IsOpen = openableThing.Value;
+					component.PlayAnimationsImmediate(openableThing.Value);
+					component.MaybeUpdateNavmeshObstacleState();
+					transmitter.UpdateRuntimeState();
+					continue;
+				}
 				if (!openableThing.Value)
 				{
 					FakeClose(component);

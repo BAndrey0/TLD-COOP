@@ -68,6 +68,7 @@ internal static class ScenePlacementSync
     private static readonly HashSet<string> FurnitureApplyWarnings = new();
     private static readonly Dictionary<string, int> FurnitureCreateAttempts = new();
     private static readonly Dictionary<string, GameObject> FurnitureAliases = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, (Move Move, GameObject Object)> SettlingFurniture = new(StringComparer.Ordinal);
     private sealed record Pot(string Gear, Pose Pose, Pose Slot, string Meshes, string Food, string Mode, int Minutes, bool CanTake, int Liquid, string NativeHover, float Liters = 0f);
     private sealed record GearTransfer(Guid Id, int Requester, string Gear, string Json, float Heat, int TimesHeated);
     private sealed record WaterTransfer(Guid Id, int Requester, float Liters, bool Potable);
@@ -127,6 +128,14 @@ internal static class ScenePlacementSync
         if (placeable != null && !string.IsNullOrEmpty(placeable.m_Guid)) return placeable.m_Guid;
         string anchor = Anchor(obj);
         return anchor.Length == 0 ? "" : "anchor-" + anchor;
+    }
+
+    internal static string FurnitureIdentity(GameObject obj)
+    {
+        var placeable = obj.GetComponentInParent<Placeable>();
+        if (placeable != null) return Id(placeable.gameObject);
+        var decoration = obj.GetComponentInParent<DecorationItem>();
+        return Id(decoration != null ? decoration.gameObject : obj);
     }
 
     private static string Anchor(GameObject obj)
@@ -277,7 +286,7 @@ internal static class ScenePlacementSync
     internal static void PublishFurniture(GameObject obj)
     {
         if (placingFurniture != null) return;
-        PublishMove(CaptureFurniture(obj));
+        PublishMove(CaptureFurniture(obj), obj);
     }
 
     private static Move CaptureFurniture(GameObject obj)
@@ -329,7 +338,18 @@ internal static class ScenePlacementSync
         return move == null ? null : () => PublishMove(move with { Removed = true, Parent = "", ParentAnchor = "", Visible = "" });
     }
 
-    private static void PublishMove(Move move)
+    private static void PublishMove(Move move, GameObject source = null)
+    {
+        if (move == null) return;
+        if (source != null && !move.Removed && !string.IsNullOrEmpty(move.Asset))
+        {
+            SettlingFurniture[move.Id] = (move, source);
+            return;
+        }
+        SendFurnitureMove(move);
+    }
+
+    private static void SendFurnitureMove(Move move)
     {
         if (move?.Pose?.Valid != true || move.Pose.Position == Vector3.zero) return;
         if (MyMod.iAmHost) AcceptMove(MyMod.level_guid, move);
@@ -383,7 +403,7 @@ internal static class ScenePlacementSync
             if (!__runOriginal || __state == null) return;
             if (__state.Moves.Length == 0)
             {
-                PublishMove(CaptureFurniture(__state.Object));
+                PublishMove(CaptureFurniture(__state.Object), __state.Object);
                 return;
             }
             foreach (var captured in __state.Moves)
@@ -396,7 +416,7 @@ internal static class ScenePlacementSync
                 var pose = obj != null && obj.transform.position != Vector3.zero ? Pose.From(obj.transform) : captured.Pose;
                 var current = obj != null ? CaptureFurniture(obj) : null;
                 PublishMove((current ?? captured) with { Parent = parent, ParentAnchor = parentAnchor, Pose = pose,
-                    PreviousId = current != null && current.Id != captured.Id ? captured.Id : "" });
+                    PreviousId = current != null && current.Id != captured.Id ? captured.Id : "" }, obj);
             }
         }
 
@@ -421,7 +441,7 @@ internal static class ScenePlacementSync
             {
                 var current = CaptureFurniture(__instance.gameObject);
                 PublishMove(current != null && current.Pose.Position != Vector3.zero
-                    ? current with { PreviousId = current.Id != __state.Id ? __state.Id : "" } : __state);
+                    ? current with { PreviousId = current.Id != __state.Id ? __state.Id : "" } : __state, __instance.gameObject);
             }
         }
     }
@@ -437,7 +457,7 @@ internal static class ScenePlacementSync
             if (!InWorld || creatingReplica || placingFurniture != null || PlaceableManager.s_IsDeserializing || __0 == null) return;
             var move = CaptureFurniture(__0.gameObject);
             if (move != null && !string.IsNullOrEmpty(move.Asset))
-                PublishMove(move with { PreviousId = __state != move.Id ? __state : "" });
+                PublishMove(move with { PreviousId = __state != move.Id ? __state : "" }, __0.gameObject);
         }
     }
 
@@ -537,6 +557,8 @@ internal static class ScenePlacementSync
             MelonLoader.MelonLogger.Msg("[Furniture] Saved move " + move.Id + " in " + area + " revision=" + move.Revision);
             if (retired != null)
             {
+                if (move.AssetName?.Contains("CuringBox", StringComparison.OrdinalIgnoreCase) == true)
+                    CuringStorageSync.MoveIdentity(area, retired.Id, move.Id);
                 ReceiveMove(area, retired);
                 SendToPeers(1, area, JsonSerializer.Serialize(retired));
             }
@@ -648,7 +670,8 @@ internal static class ScenePlacementSync
         }
         if (obj == null) return false;
         var placeable = obj.GetComponent<Placeable>();
-        if (placeable != null && (placeable.m_Invalidated || PlaceableManager.GetPlacementState(placeable) == PlacementState.Removed)) return false;
+        if (placeable != null && (placeable.m_Invalidated ||
+            PlaceableManager.GetPlacementState(placeable) is PlacementState.Removed or PlacementState.OnPlayer)) return false;
         bool fixedBed = IsFixedBed(obj);
         if (fixedBed && BedRest.IsOccupied(obj.GetComponentInChildren<Bed>(true))) return false;
         var player = GameManager.GetPlayerManagerComponent();
@@ -1423,6 +1446,7 @@ internal static class ScenePlacementSync
 
     internal static void Tick()
     {
+        CuringStorageSync.Tick();
         if (MyMod.iAmHost)
         {
             Server.clients.TryGetValue(1, out var session);
@@ -1454,6 +1478,7 @@ internal static class ScenePlacementSync
             FurnitureApplyWarnings.Clear();
             FurnitureCreateAttempts.Clear();
             FurnitureAliases.Clear();
+            SettlingFurniture.Clear();
             nextFurnitureApply = 0f;
             scene = area;
             ScheduleFurnitureReplay();
@@ -1470,6 +1495,15 @@ internal static class ScenePlacementSync
             }
         }
         if (area == null) return;
+        foreach (var item in SettlingFurniture.Values.ToArray())
+        {
+            SettlingFurniture.Remove(item.Move.Id);
+            if (item.Object == null || !item.Object.activeInHierarchy) continue;
+            var placeable = item.Object.GetComponent<Placeable>();
+            if (placeable == null || PlaceableManager.GetPlacementState(placeable) != PlacementState.Active ||
+                item.Object.GetComponent<DecorationItem>()?.IsCraftedItemPlacementPending() == true) continue;
+            SendFurnitureMove(item.Move);
+        }
         float now = Time.realtimeSinceStartup;
         bool reportReplay = false;
         if (MyMod.iAmHost && furnitureReplays > 0 && now >= replayFurnitureAt && !PlaceableManager.s_IsDeserializing)
@@ -1554,7 +1588,7 @@ internal static class ScenePlacementSync
         string data = packet.ReadString();
         if (from <= 0 || from >= MyMod.playersData.Count || MyMod.playersData[from]?.m_LevelGuid != area ||
             !WildlifeSpawnAuthorityPolicy.WorldScene(area) || area.Length > 160 ||
-            area.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0 || data.Length > (kind == 9 ? 10000 : 1100)) return;
+            area.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0 || data.Length > (kind is 9 or 17 or 18 ? 12000 : 1100)) return;
         try
         {
             if (kind == 0)
@@ -1577,6 +1611,7 @@ internal static class ScenePlacementSync
                 using var waterReady = MakeServerPacket(13, area, "", 0, 0);
                 ServerSend.SendUDPData(from, waterReady);
             }
+            else if (kind is 17 or 18) CuringStorageSync.ReceiveClient(kind, from, area, data);
             else if (kind == 14) GearPlacementSync.Accept(area, key, data, from);
             else if (kind == 12) PublishWaterLevel(area, JsonSerializer.Deserialize<SceneWaterSync.Level>(data));
             else if (kind == 11 && SceneRepairSync.Accept(area, data)) SendToPeers(11, area, data);
@@ -1616,10 +1651,11 @@ internal static class ScenePlacementSync
         int owner = packet.ReadInt();
         int key = packet.ReadInt();
         string data = packet.ReadString();
-        if (!InWorld || area != MyMod.level_guid || data.Length > (kind == 9 ? 10000 : 1100)) return;
+        if (!InWorld || area != MyMod.level_guid || data.Length > (kind is 9 or 17 ? 12000 : 1100)) return;
         try
         {
-            if (kind == 14 || kind == 15) GearPlacementSync.Receive(key, data, reply: kind == 15);
+            if (kind == 17) CuringStorageSync.Receive(data);
+            else if (kind == 14 || kind == 15) GearPlacementSync.Receive(key, data, reply: kind == 15);
             else if (kind == 16) GearPlacementSync.MissingPreview(key);
             else if (kind == 10) DeathRespawn.Receive(area, key, data);
             else if (kind == 11) SceneRepairSync.Receive(area, data);
@@ -1643,6 +1679,14 @@ internal static class ScenePlacementSync
     }
 
     internal static void SendRescueToHost(int subject, string data) => SendToHost(10, MyMod.level_guid, data, subject);
+
+    internal static void SendCuring(byte kind, string area, string data) => SendToHost(kind, area, data);
+
+    internal static void ReplyCuring(int guest, string area, string data)
+    {
+        using var packet = MakeServerPacket(17, area, data, 0, 0);
+        ServerSend.SendUDPData(guest, packet);
+    }
 
     internal static void SendDroppedMove(string area, int key, string data) => SendToHost(14, area, data, key);
 

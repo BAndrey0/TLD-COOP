@@ -1332,12 +1332,11 @@ public class Shared
 
 	public static void ChangeOpenableThingState(string Scene, string GUID, bool state)
 	{
-		MyMod.OpenableThings.Remove(GUID);
-		MyMod.OpenableThings.Add(GUID, state);
+		if (Scene == MyMod.level_guid) MyMod.OpenableThings[GUID] = state;
 		Log("Openable things " + GUID + " changed state to OpenIs=" + state);
 		if (MyMod.iAmHost)
 		{
-			ServerSend.USEOPENABLE(0, GUID, state, toAll: true);
+			ServerSend.USEOPENABLE(0, Scene, GUID, state, toAll: true);
 			MPSaveManager.ChangeOpenableThingState(Scene, GUID, state);
 		}
 	}
