@@ -753,6 +753,7 @@ public static class SelfTest
 		{
 			if (door == null || door.GetSceneToLoad() != "RuralRegion") continue;
 			ScenePlacementSync.ProbeFurnitureInCurrentRoom();
+			ScenePlacementSync.ProbeGuestCooking();
 			ProbeCuringDrop();
 			try { MyMod.ProbeFoodDrop(); CuringStorageSync.Probe(); ProbeRecoveredArrow(); }
 			catch (Exception ex) { MelonLogger.Error("[Item state probe] " + ex); }

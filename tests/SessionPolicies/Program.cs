@@ -8,6 +8,9 @@ static class Program
  static void Main()
  {
   MyMod.sendMyPosition = true;
+  var escapedCooking = System.Text.Json.JsonSerializer.Serialize(new { NativeHover = new string('я', 300), Meshes = new string('A', 256) });
+  Check(escapedCooking.Length > 1100 && escapedCooking.Length <= SceneMessageLimits.PayloadLimit(2), "Escaped Russian cooking labels must pass the scene packet size check");
+  Check(SceneMessageLimits.PayloadLimit(1) == 1100, "Furniture keeps its own packet size limit");
   Check(!DroppedMovePolicy.ReturnPreviewOnRestore(true, true), "Native restore during confirmation must not cancel the pending move");
   Check(DroppedMovePolicy.ReturnPreviewOnRestore(false, true), "Cancelling a preview must restore its source");
   Check(!DroppedMovePolicy.ReturnPreviewOnRestore(false, false), "Native furniture is not a dropped preview");

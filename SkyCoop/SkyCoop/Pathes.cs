@@ -3650,8 +3650,7 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
-			if (hit.transform == null) return;
-			var cookware = ScenePlacementSync.IsCookwareReplica(hit.transform.gameObject)
+			var cookware = hit.transform != null && ScenePlacementSync.IsCookwareReplica(hit.transform.gameObject)
 				? hit.transform.gameObject : ScenePlacementSync.AimCookware(2.5f, hit);
 			if (cookware != null)
 			{
@@ -3659,6 +3658,7 @@ public class Pathes
 				interactiveObj = cookware;
 				return;
 			}
+			if (hit.transform == null) return;
 			var dropped = DroppedGearInteraction.Find(hit.transform.gameObject);
 			if (dropped != null)
 			{
@@ -5774,14 +5774,48 @@ public class Pathes
 	}
 
 	[HarmonyPatch(typeof(SafehouseManager), nameof(SafehouseManager.StopCustomizing))]
-	private static class RestoreSafehouseControls
+	internal static class RestoreSafehouseControls
 	{
-		private static void Postfix(SafehouseManager __instance)
+		private static int stopping;
+		private static bool savePending;
+		private static float saveAt;
+		private static void Prefix(out bool __state)
 		{
-			if (!MyMod.InOnline() || __instance.IsCustomizing()) return;
+			__state = MyMod.InOnline();
+			if (__state) stopping++;
+		}
+
+		private static void Finalizer(SafehouseManager __instance, bool __state)
+		{
+			if (!__state) return;
+			stopping--;
+			if (__instance == null || __instance.IsCustomizing()) return;
 			var player = GameManager.GetPlayerManagerComponent();
 			if (player != null && player.GetControlMode() == PlayerControlMode.SafehouseCustomization)
 				player.ReturnToNormalControlMode(PlayerControlMode.SafehouseCustomization);
+		}
+
+		[HarmonyPatch(typeof(GameManager), nameof(GameManager.SaveGameAndDisplayHUDMessage))]
+		private static class DeferSaveUntilCustomizationEnds
+		{
+			private static bool Prefix()
+			{
+				if (stopping == 0) return true;
+				savePending = true;
+				saveAt = Time.realtimeSinceStartup + 1f;
+				return false;
+			}
+		}
+
+		internal static void Tick()
+		{
+			if (!savePending) return;
+			if (!MyMod.InOnline() || CoopReturnToMenu.InProgress) { savePending = false; return; }
+			if (MyMod.LoadingScreenIsOn || Time.realtimeSinceStartup < saveAt) return;
+			var player = GameManager.GetPlayerManagerComponent();
+			if (player == null || player.GetControlMode() != PlayerControlMode.Normal) return;
+			savePending = false;
+			GameManager.ForceSaveGame();
 		}
 	}
 

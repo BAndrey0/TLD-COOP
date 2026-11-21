@@ -2023,6 +2023,7 @@ public class Comps
 			{
 				return;
 			}
+			if (m_ID < 0 || m_ID >= MyMod.playersData.Count || MyMod.playersData[m_ID] == null) return;
 			if (hand_r == null)
 			{
 				int index = 0;
@@ -2593,6 +2594,7 @@ public class Comps
 			if (!m_MyDoll)
 			{
 				index = gameObject.GetComponent<MultiplayerPlayer>().m_ID;
+				if (index < 0 || index >= MyMod.playersData.Count || MyMod.playersData[index] == null) return;
 				if (MyMod.playersData[index] != null && MyMod.playersData[index].m_Levelid != MyMod.levelid)
 				{
 					return;
