@@ -18,11 +18,11 @@ namespace CoopLauncher;
 
 // TLD-COOP launcher: installs the separate co-op copy of the game, keeps the mod updated from GitHub releases and
 // starts the game. It drives the same kit scripts as Install.cmd / Update.cmd / Play-Coop.cmd (downloaded with each
-// release into friend-kit next to the launcher), so installing by hand and through the launcher give the same result.
+// release and run from a temporary directory next to the launcher).
 //
 // Folder layout (the launcher's own folder is the root):
 //   TLD-Coop-Launcher.exe, launcher.json
-//   friend-kit\   kit of the installed or newest release
+//   friend-kit\   optional kit unpacked for manual installation
 //   downloads\    release archives, MelonLoader, .NET runtime, mod assets (cached, checksummed by the scripts)
 //   player\       the co-op copy of the game (default; any English-letter path can be chosen)
 internal static class Program
@@ -34,21 +34,6 @@ internal static class Program
 		{
 			File.WriteAllText(args.Length > 1 ? args[1] : "launcher-check.txt", LauncherForm.SelfCheck(), Encoding.UTF8);
 			return;
-		}
-		// The copy inside friend-kit moves itself next to friend-kit first: updating the kit replaces that folder.
-		string dir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-		if (string.Equals(Path.GetFileName(dir), "friend-kit", StringComparison.OrdinalIgnoreCase) && File.Exists(Path.Combine(dir, "manifest.json")))
-		{
-			try
-			{
-				string outside = Path.Combine(Path.GetDirectoryName(dir), "TLD-Coop-Launcher.exe");
-				File.Copy(Application.ExecutablePath, outside, overwrite: true);
-				Process.Start(outside);
-				return;
-			}
-			catch
-			{
-			}
 		}
 		Application.EnableVisualStyles();
 		Application.SetCompatibleTextRenderingDefault(false);
@@ -91,8 +76,7 @@ internal sealed partial class LauncherForm : Form
 
 	private readonly string root = ResolveRoot();
 
-	// Started from inside friend-kit (the copy shipped in the release archive): work from the folder above it, so
-	// updating the kit does not delete the running launcher.
+	// Use the parent for settings and downloads when launched from a manually unpacked kit.
 	private static string ResolveRoot()
 	{
 		string dir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
@@ -132,7 +116,6 @@ internal sealed partial class LauncherForm : Form
 
 	private string StatePath => Path.Combine(root, "launcher.json");
 
-	private string KitDir => Path.Combine(root, "friend-kit");
 
 	private string DownloadsDir => Path.Combine(root, "downloads");
 
@@ -495,42 +478,59 @@ internal sealed partial class LauncherForm : Form
 		}
 	}
 
-	private async Task FetchKit(ReleaseInfo release)
+	private async Task<string> FetchKit(ReleaseInfo release)
 	{
-		string zip = await Download(release.ZipUrl, release.ZipName,release.ZipHash);
-		string staging = Path.Combine(DownloadsDir, "kit-" + release.Version.ToString(3));
-		if (Directory.Exists(staging))
+		string zip = await Download(release.ZipUrl, release.ZipName, release.ZipHash);
+		string kit = ExtractKit(zip, root);
+		Log("Набор мода " + release.Version.ToString(3) + " готов к установке.");
+		return kit;
+	}
+
+	private static string ExtractKit(string zip, string installRoot)
+	{
+		string operation = Guid.NewGuid().ToString("N");
+		string staging = Path.Combine(installRoot, ".tld-coop-extract-" + operation);
+		string kit = Path.Combine(installRoot, ".tld-coop-update-" + operation);
+		try
 		{
-			Directory.Delete(staging, recursive: true);
+			ZipFile.ExtractToDirectory(zip, staging);
+			string extracted = Path.Combine(staging, "friend-kit");
+			string manifestPath = Path.Combine(extracted, "manifest.json");
+			if (!File.Exists(manifestPath))
+				throw new InvalidOperationException("В архиве релиза нет friend-kit\\manifest.json.");
+			var manifest = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(manifestPath));
+			if (manifest == null || !manifest.TryGetValue("files", out var entries) || !(entries is System.Collections.IList files) || files.Count == 0)
+				throw new InvalidOperationException("Неполный манифест обновления.");
+			foreach (object entry in files)
+			{
+				if (!(entry is Dictionary<string, object> file) || !file.TryGetValue("name", out var nameValue) ||
+					!(nameValue is string name) || string.IsNullOrEmpty(name) || Path.GetFileName(name) != name ||
+					!file.TryGetValue("sha256", out var hash))
+					throw new InvalidOperationException("Некорректный манифест обновления.");
+				using (var sha = SHA256.Create())
+				using (var input = File.OpenRead(Path.Combine(extracted, "files", name)))
+				{
+					string actual = BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "");
+					if (!string.Equals(actual, Convert.ToString(hash), StringComparison.OrdinalIgnoreCase))
+						throw new InvalidOperationException("Повреждён файл обновления: " + name);
+				}
+			}
+			// Kit scripts locate the download cache and install pointer through their parent directory.
+			Directory.Move(extracted, kit);
+			return kit;
 		}
-		ZipFile.ExtractToDirectory(zip, staging);
-		string extracted = Path.Combine(staging, "friend-kit");
-		if (!File.Exists(Path.Combine(extracted, "manifest.json")))
+		finally
 		{
-			throw new InvalidOperationException("в архиве релиза нет friend-kit\\manifest.json");
+			CleanTemporaryKit(staging);
 		}
-		var manifest=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(extracted,"manifest.json")));
-		if(manifest==null||!manifest.TryGetValue("files",out var entries)||!(entries is System.Collections.IEnumerable entryList))throw new InvalidOperationException("Неполный манифест обновления");
-		foreach(object entry in entryList)
-		{
-			var file=entry as Dictionary<string,object>;if(file==null)throw new InvalidOperationException("Некорректный манифест обновления");
-			string name=Convert.ToString(file["name"]);if(Path.GetFileName(name)!=name)throw new InvalidOperationException("Некорректный путь в обновлении");
-			using(var sha=SHA256.Create())using(var input=File.OpenRead(Path.Combine(extracted,"files",name)))
-				if(!string.Equals(BitConverter.ToString(sha.ComputeHash(input)).Replace("-",""),Convert.ToString(file["sha256"]),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Повреждён файл обновления: "+name);
-		}
-		string previousKit = KitDir + ".previous";
-		if (Directory.Exists(previousKit)) Directory.Delete(previousKit, true);
-		bool hadKit = Directory.Exists(KitDir);
-		if (hadKit) Directory.Move(KitDir, previousKit);
-		try { Directory.Move(extracted, KitDir); }
-		catch
-		{
-			if (hadKit && !Directory.Exists(KitDir)) Directory.Move(previousKit, KitDir);
-			throw;
-		}
-		if (hadKit) Directory.Delete(previousKit, true);
-		Directory.Delete(staging, recursive: true);
-		Log("Набор мода " + release.Version.ToString(3) + " распакован в friend-kit.");
+	}
+
+	private static void CleanTemporaryKit(string directory)
+	{
+		if (!Directory.Exists(directory)) return;
+		try { Directory.Delete(directory, recursive: true); }
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
 	}
 
 	// ---------------------------------------------------------------- install / update / play
@@ -598,13 +598,14 @@ internal sealed partial class LauncherForm : Form
 			state.gameDirectory = gameDir;
 		}
 		SetBusy(true, installed ? "Обновляю мод…" : "Устанавливаю: копирую игру (~21 ГБ) и ставлю мод. Это займёт время.");
+		string kit = null;
 		try
 		{
-			await FetchKit(latest);
+			kit = await FetchKit(latest);
 			string previousInstall = null;
 			if (installed)
 			{
-				var manifest = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(KitDir, "manifest.json")));
+				var manifest = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(kit, "manifest.json")));
 				string assembly = Path.Combine(installDir, "game", "GameAssembly.dll");
 				string expected = Convert.ToString(manifest["gameAssemblySHA256"]);
 				string actual;
@@ -626,13 +627,13 @@ internal sealed partial class LauncherForm : Form
 			}
 			if (installed)
 			{
-				await RunScript(Path.Combine(KitDir, "Update-Coop.ps1"), "-InstallDirectory \"" + installDir + "\"");
+				await RunScript(Path.Combine(kit, "Update-Coop.ps1"), "-InstallDirectory \"" + installDir + "\"");
 			}
 			else
 			{
 				string defer = previousInstall != null ? " -DeferInstallLocation" : "";
-				await RunScript(Path.Combine(KitDir, "Install-Lab.ps1"), "-GameDirectory \"" + gameDir + "\" -InstallDirectory \"" + installDir + "\"" + defer);
-				await RunScript(Path.Combine(KitDir, "Update-Coop.ps1"), "-InstallDirectory \"" + installDir + "\"");
+				await RunScript(Path.Combine(kit, "Install-Lab.ps1"), "-GameDirectory \"" + gameDir + "\" -InstallDirectory \"" + installDir + "\"" + defer);
+				await RunScript(Path.Combine(kit, "Update-Coop.ps1"), "-InstallDirectory \"" + installDir + "\"");
 			}
 			if (previousInstall != null && Directory.Exists(Path.Combine(previousInstall, "saves")))
 			{
@@ -669,6 +670,7 @@ internal sealed partial class LauncherForm : Form
 		}
 		finally
 		{
+			CleanTemporaryKit(kit);
 			SetBusy(false, null);
 		}
 	}

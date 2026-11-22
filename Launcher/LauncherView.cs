@@ -307,7 +307,7 @@ internal sealed partial class LauncherForm
 			}
 		}
 		string script=Path.Combine(state.installDirectory,"Sync-GameContent.ps1");
-		if(!File.Exists(script))script=Path.Combine(KitDir,"Sync-GameContent.ps1");
+		if(!File.Exists(script))script=Path.Combine(root,"friend-kit","Sync-GameContent.ps1");
 		if(File.Exists(script))await RunScript(script,"-GameDirectory \""+source+"\" -InstallDirectory \""+state.installDirectory+"\"");
 	}
 }
