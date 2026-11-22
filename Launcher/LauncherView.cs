@@ -264,16 +264,16 @@ internal sealed partial class LauncherForm
 		settingsTab.AccessibleDescription = settings ? "Текущий раздел" : "";
 	}
 
-	private void RefreshDashboard(bool installed, Version current, bool update)
+	private void RefreshDashboard(bool installed, Version current, bool update, bool incomplete)
 	{
-		installedValue.Text = current?.ToString(3) ?? (installed ? "Неизвестно" : "Нет");
+		installedValue.Text = incomplete ? "Прервано" : current?.ToString(3) ?? (installed ? "Неизвестно" : "Нет");
 		latestValue.Text = latest?.Version.ToString(3) ?? "—";
 		contentValue.Text = installed && File.Exists(Path.Combine(state.installDirectory, "game", "tld_dlc", "TFTFT", "DLC01.json")) ? "TFTFT" : installed ? "Базовая игра" : "—";
 		sourcePath.Text = string.IsNullOrEmpty(state.gameDirectory) ? "Папка определяется при установке" : state.gameDirectory;
-		syncButton.Enabled = !busy && installed;
+		syncButton.Enabled = !busy && installed && !incomplete;
 		sourceButton.Enabled = existingButton.Enabled = folderButton.Enabled = !busy;
 		playButton.Visible = installed;
-		installButton.Visible = !installed || update;
+		installButton.Visible = !installed || update || incomplete;
 		progress.Visible = busy;
 	}
 

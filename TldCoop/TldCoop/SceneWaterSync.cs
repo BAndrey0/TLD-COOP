@@ -101,14 +101,20 @@ internal static class SceneWaterSync
         }
     }
 
-    internal static Grant Accept(string area, Withdrawal request, bool requesterInArea)
+    internal static Grant Accept(string area, Withdrawal request, bool requesterInArea, out Level level)
     {
+        level = null;
         if (request == null || request.Operation == Guid.Empty || string.IsNullOrEmpty(request.Id) ||
             request.Id.Length > 120 || !float.IsFinite(request.Observed) || request.Observed is < 0 or > 1000 ||
             !float.IsFinite(request.Requested) || request.Requested is <= 0 or > 1000) return null;
         var levels = GetSaved(area);
         var state = States[area];
-        if (state.Grants.TryGetValue(request.Operation, out var replay)) return replay;
+        if (state.Grants.TryGetValue(request.Operation, out var replay))
+        {
+            if (requesterInArea && levels.TryGetValue(replay.Id, out float current))
+                level = new Level(replay.Id, current);
+            return replay;
+        }
         if (!requesterInArea) return new Grant(request.Operation, request.Id, 0, 0, request.Potable);
         if (!levels.TryGetValue(request.Id, out float remaining))
         {
@@ -128,7 +134,8 @@ internal static class SceneWaterSync
         if (!MPSaveManager.SaveData(area + "_WaterLevels", JsonSerializer.Serialize(next), seed)) return null;
         States[area] = next;
         Saved[area] = next.Levels;
-        Receive(area, new Level(grant.Id, grant.Remaining));
+        level = new Level(grant.Id, grant.Remaining);
+        Receive(area, level);
         return grant;
     }
 

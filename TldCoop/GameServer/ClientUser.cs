@@ -112,6 +112,7 @@ internal class ClientUser
 
 		private void HandleData(byte[] _data)
 		{
+			var sessionHandlers = packetHandlers;
 			using (Packet packet = new Packet(_data))
 			{
 				int length = packet.ReadInt();
@@ -119,14 +120,22 @@ internal class ClientUser
 			}
 			ThreadManager.ExecuteOnMainThread(delegate
 			{
+				if (!ReferenceEquals(udp, this) || socket == null || sessionHandlers == null || packetHandlers != sessionHandlers)
+				{
+					return;
+				}
 				using Packet packet2 = new Packet(_data);
 				int key = packet2.ReadInt();
+				if (!sessionHandlers.TryGetValue(key, out var handler))
+				{
+					return;
+				}
 				if (MyMod.DebugTrafficCheck)
 				{
 					MelonLogger.Msg(ConsoleColor.Yellow, "[DebugTrafficCheck] Got packet ID " + key);
 					MelonLogger.Msg(ConsoleColor.Yellow, "[DebugTrafficCheck] Packet size " + packet2.ReturnSize() + " bytes");
 				}
-				packetHandlers[key](packet2);
+				handler(packet2);
 			});
 		}
 

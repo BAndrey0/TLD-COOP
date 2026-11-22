@@ -67,25 +67,60 @@ public class MPSaveManager
 
 	public static bool NoSaveAndLoad = false;
 
-	public static Dictionary<string, Dictionary<int, DataStr.DroppedGearItemDataPacket>> RecentVisual = new Dictionary<string, Dictionary<int, DataStr.DroppedGearItemDataPacket>>();
+	private sealed class WorldChanges
+	{
+		internal readonly Dictionary<string, Dictionary<int, DataStr.DroppedGearItemDataPacket>> RecentVisual = new();
+		internal readonly Dictionary<string, Dictionary<int, DataStr.SlicedJsonDroppedGear>> RecentData = new();
+		internal readonly Dictionary<string, Dictionary<string, bool>> RecentOpenableThings = new();
+		internal readonly Dictionary<string, Dictionary<string, DataStr.BrokenFurnitureSync>> RecentBrokenFurns = new();
+		internal readonly Dictionary<string, Dictionary<long, DataStr.PickedGearSync>> RecentPickedGears = new();
+		internal readonly Dictionary<string, Dictionary<string, int>> RecentlyLootedContainers = new();
+		internal readonly Dictionary<string, Dictionary<string, int>> RecentlyHarvastedPlants = new();
 
-	public static Dictionary<string, Dictionary<int, DataStr.SlicedJsonDroppedGear>> RecentData = new Dictionary<string, Dictionary<int, DataStr.SlicedJsonDroppedGear>>();
+		internal Dictionary<string, long> UsersSaveHashs = new();
+		internal Dictionary<string, Dictionary<string, string>> LockedDoors = new();
+		internal readonly Dictionary<string, bool> UsedKeys = new();
+		internal Dictionary<string, DataStr.AnimalKilled> AnimalsKilled = new();
+		internal Dictionary<string, Dictionary<string, DataStr.FakeRockCacheVisualData>> RockCaches = new();
+		internal Dictionary<string, Dictionary<string, DataStr.UniversalSyncableObject>> UniversalSyncableObjects = new();
 
-	public static Dictionary<string, Dictionary<string, bool>> RecentOpenableThings = new Dictionary<string, Dictionary<string, bool>>();
+		internal bool SaveHashsChanged, LockedDoorsChanged, AnimalsKilledChanged, RockCachesChanged, UniversalSyncableObjectsChanged;
+		internal bool HasChanges => SaveHashsChanged || LockedDoorsChanged || AnimalsKilledChanged || RockCachesChanged ||
+			UniversalSyncableObjectsChanged || RecentVisual.Count != 0 || RecentData.Count != 0 || RecentOpenableThings.Count != 0 ||
+			RecentBrokenFurns.Count != 0 || RecentPickedGears.Count != 0 || RecentlyLootedContainers.Count != 0 ||
+			RecentlyHarvastedPlants.Count != 0;
+	}
 
-	public static Dictionary<string, long> UsersSaveHashs = new Dictionary<string, long>();
+	private static readonly Dictionary<(int Seed, string World), WorldChanges> pendingWorlds = new();
+	private static (int Seed, string World) currentWorld;
+	private static WorldChanges currentChanges;
 
-	public static Dictionary<string, Dictionary<string, string>> LockedDoors = new Dictionary<string, Dictionary<string, string>>();
+	private static WorldChanges Changes
+	{
+		get
+		{
+			var world = (GameManager.m_SceneTransitionData?.m_GameRandomSeed ?? 0, WorldSaveIdentity.Active);
+			if (currentChanges != null && currentWorld == world) return currentChanges;
+			if (currentChanges?.HasChanges == true) pendingWorlds[currentWorld] = currentChanges;
+			if (!pendingWorlds.Remove(world, out currentChanges)) currentChanges = new();
+			currentWorld = world;
+			return currentChanges;
+		}
+	}
 
-	public static Dictionary<string, bool> UsedKeys = new Dictionary<string, bool>();
+	public static Dictionary<string, Dictionary<int, DataStr.DroppedGearItemDataPacket>> RecentVisual => Changes.RecentVisual;
+	public static Dictionary<string, Dictionary<int, DataStr.SlicedJsonDroppedGear>> RecentData => Changes.RecentData;
+	public static Dictionary<string, Dictionary<string, bool>> RecentOpenableThings => Changes.RecentOpenableThings;
+	public static Dictionary<string, long> UsersSaveHashs => Changes.UsersSaveHashs;
+	public static Dictionary<string, Dictionary<string, string>> LockedDoors => Changes.LockedDoors;
+	public static Dictionary<string, bool> UsedKeys => Changes.UsedKeys;
+	internal static Dictionary<string, DataStr.AnimalKilled> AnimalsKilled => Changes.AnimalsKilled;
 
 	public static Dictionary<int, LocksmithBlank> Blanks = new Dictionary<int, LocksmithBlank>();
 
-	public static bool SaveHashsChanged = false;
-
-	public static bool LockedDoorsChanged = false;
-
-	public static bool AnimalsKilledChanged = false;
+	public static bool SaveHashsChanged { get => Changes.SaveHashsChanged; set => Changes.SaveHashsChanged = value; }
+	public static bool LockedDoorsChanged { get => Changes.LockedDoorsChanged; set => Changes.LockedDoorsChanged = value; }
+	public static bool AnimalsKilledChanged { get => Changes.AnimalsKilledChanged; set => Changes.AnimalsKilledChanged = value; }
 
 	public static int SaveRecentTimer = 5;
 
@@ -105,13 +140,13 @@ public class MPSaveManager
 
 	public static float LeadKeyBrokeChance = 0.13f;
 
-	public static Dictionary<string, Dictionary<string, DataStr.BrokenFurnitureSync>> RecentBrokenFurns = new Dictionary<string, Dictionary<string, DataStr.BrokenFurnitureSync>>();
+	public static Dictionary<string, Dictionary<string, DataStr.BrokenFurnitureSync>> RecentBrokenFurns => Changes.RecentBrokenFurns;
 
-	public static Dictionary<string, Dictionary<long, DataStr.PickedGearSync>> RecentPickedGears = new Dictionary<string, Dictionary<long, DataStr.PickedGearSync>>();
+	public static Dictionary<string, Dictionary<long, DataStr.PickedGearSync>> RecentPickedGears => Changes.RecentPickedGears;
 
-	public static Dictionary<string, Dictionary<string, int>> RecentlyLootedContainers = new Dictionary<string, Dictionary<string, int>>();
+	public static Dictionary<string, Dictionary<string, int>> RecentlyLootedContainers => Changes.RecentlyLootedContainers;
 
-	public static Dictionary<string, Dictionary<string, int>> RecentlyHarvastedPlants = new Dictionary<string, Dictionary<string, int>>();
+	public static Dictionary<string, Dictionary<string, int>> RecentlyHarvastedPlants => Changes.RecentlyHarvastedPlants;
 
 	public static List<DataStr.DeathContainerData> DeathCreates = new List<DataStr.DeathContainerData>();
 
@@ -121,13 +156,10 @@ public class MPSaveManager
 
 	public static string MyMAC = "";
 
-	public static Dictionary<string, Dictionary<string, DataStr.FakeRockCacheVisualData>> RockCaches = new Dictionary<string, Dictionary<string, DataStr.FakeRockCacheVisualData>>();
-
-	public static bool RockCachesChanged = false;
-
-	public static Dictionary<string, Dictionary<string, DataStr.UniversalSyncableObject>> UniversalSyncableObjects = new Dictionary<string, Dictionary<string, DataStr.UniversalSyncableObject>>();
-
-	public static bool UniversalSyncableObjectsChanged = false;
+	public static Dictionary<string, Dictionary<string, DataStr.FakeRockCacheVisualData>> RockCaches => Changes.RockCaches;
+	public static bool RockCachesChanged { get => Changes.RockCachesChanged; set => Changes.RockCachesChanged = value; }
+	public static Dictionary<string, Dictionary<string, DataStr.UniversalSyncableObject>> UniversalSyncableObjects => Changes.UniversalSyncableObjects;
+	public static bool UniversalSyncableObjectsChanged { get => Changes.UniversalSyncableObjectsChanged; set => Changes.UniversalSyncableObjectsChanged = value; }
 
 	public static Dictionary<string, int> FestiveGearsSpawnCooldown = new Dictionary<string, int>();
 
@@ -436,57 +468,38 @@ public class MPSaveManager
 
 	public static void LoadNonUnloadables()
 	{
-		LockedDoors.Clear();
-		UsedKeys.Clear();
-		Shared.AnimalsKilled.Clear();
-		RockCaches.Clear();
-		UniversalSyncableObjects.Clear();
-		UsersSaveHashs.Clear();
-		LockedDoorsChanged = false;
-		AnimalsKilledChanged = false;
-		RockCachesChanged = false;
-		UniversalSyncableObjectsChanged = false;
-		SaveHashsChanged = false;
-
 		int seed = GetSeed();
+		var changes = Changes;
 		Log("LoadNonUnloadables Seed " + seed);
-		string text = LoadData("LockedDoors", seed);
-		string text2 = LoadData("UsersSaveHashes", seed);
-		string text3 = LoadData("KilledAnimals", seed);
-		string text4 = LoadData("BanList");
-		string text5 = LoadData("RockCaches", seed);
-		string text6 = LoadData("UniversalSyncables", seed);
-		if (!string.IsNullOrEmpty(text))
+		if (!changes.LockedDoorsChanged)
 		{
-			LockedDoors = JSON.Load(text).Make<Dictionary<string, Dictionary<string, string>>>();
-			foreach (KeyValuePair<string, Dictionary<string, string>> lockedDoor in LockedDoors)
+			changes.LockedDoors = LoadWorldData<Dictionary<string, Dictionary<string, string>>>("LockedDoors", seed);
+			changes.UsedKeys.Clear();
+			foreach (var lockedDoor in changes.LockedDoors.Values)
 			{
-				foreach (KeyValuePair<string, string> item in lockedDoor.Value)
+				foreach (string key in lockedDoor.Values)
 				{
-					UsedKeys[item.Value] = true;
+					changes.UsedKeys[key] = true;
 				}
 			}
 		}
-		if (!string.IsNullOrEmpty(text2))
-		{
-			UsersSaveHashs = JSON.Load(text2).Make<Dictionary<string, long>>();
-		}
-		if (!string.IsNullOrEmpty(text3))
-		{
-			Shared.AnimalsKilled = JSON.Load(text3).Make<Dictionary<string, DataStr.AnimalKilled>>();
-		}
-		if (!string.IsNullOrEmpty(text4))
-		{
-			BannedUsers = JSON.Load(text4).Make<Dictionary<string, string>>();
-		}
-		if (!string.IsNullOrEmpty(text5))
-		{
-			RockCaches = JSON.Load(text5).Make<Dictionary<string, Dictionary<string, DataStr.FakeRockCacheVisualData>>>();
-		}
-		if (!string.IsNullOrEmpty(text6))
-		{
-			UniversalSyncableObjects = JSON.Load(text6).Make<Dictionary<string, Dictionary<string, DataStr.UniversalSyncableObject>>>();
-		}
+		if (!changes.SaveHashsChanged)
+			changes.UsersSaveHashs = LoadWorldData<Dictionary<string, long>>("UsersSaveHashes", seed);
+		if (!changes.AnimalsKilledChanged)
+			changes.AnimalsKilled = LoadWorldData<Dictionary<string, DataStr.AnimalKilled>>("KilledAnimals", seed);
+		if (!changes.RockCachesChanged)
+			changes.RockCaches = LoadWorldData<Dictionary<string, Dictionary<string, DataStr.FakeRockCacheVisualData>>>("RockCaches", seed);
+		if (!changes.UniversalSyncableObjectsChanged)
+			changes.UniversalSyncableObjects = LoadWorldData<Dictionary<string, Dictionary<string, DataStr.UniversalSyncableObject>>>("UniversalSyncables", seed);
+
+		string bans = LoadData("BanList");
+		if (!string.IsNullOrEmpty(bans)) BannedUsers = JSON.Load(bans).Make<Dictionary<string, string>>();
+	}
+
+	private static T LoadWorldData<T>(string name, int seed) where T : class, new()
+	{
+		string data = LoadData(name, seed);
+		return string.IsNullOrEmpty(data) ? new T() : JSON.Load(data).Make<T>() ?? new T();
 	}
 
 	public static string GenerateSeededGUID(int gameSeed, Vector3 v3)
@@ -651,79 +664,56 @@ public class MPSaveManager
 		return "";
 	}
 
-	public static void SaveRecentStuff()
+	public static bool SaveRecentStuff()
 	{
-		Stopwatch stopwatch = null;
-		if (Diagnostic)
-		{
-			stopwatch = Stopwatch.StartNew();
-		}
+		if (NoSaveAndLoad) return true;
+		var changes = Changes;
+
+		var stopwatch = Diagnostic ? Stopwatch.StartNew() : null;
 		int seed = GetSeed();
-		ValidateRootExits();
-		if (SaveHashsChanged)
+		try
 		{
-			SaveHashsChanged = false;
-			SaveData("UsersSaveHashes", JSON.Dump(UsersSaveHashs), seed);
+			ValidateRootExits();
 		}
-		if (LockedDoorsChanged)
+		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
 		{
-			LockedDoorsChanged = false;
-			SaveData("LockedDoors", JSON.Dump(LockedDoors), seed);
+			Error($"Could not prepare the world save directory: {ex.Message}");
+			return false;
 		}
-		if (AnimalsKilledChanged)
-		{
-			AnimalsKilledChanged = false;
-			SaveData("KilledAnimals", JSON.Dump(Shared.AnimalsKilled), seed);
-		}
-		if (RockCachesChanged)
-		{
-			RockCachesChanged = false;
-			SaveData("RockCaches", JSON.Dump(RockCaches), seed);
-		}
-		if (UniversalSyncableObjectsChanged)
-		{
-			UniversalSyncableObjectsChanged = false;
-			SaveData("UniversalSyncables", JSON.Dump(UniversalSyncableObjects), seed);
-		}
-		foreach (KeyValuePair<string, Dictionary<int, DataStr.DroppedGearItemDataPacket>> item in RecentVisual.ToList())
-		{
-			SaveData(GetKeyTemplate(SaveKeyTemplateType.DropsVisual, item.Key), JSON.Dump(item.Value), seed);
-		}
-		foreach (KeyValuePair<string, Dictionary<int, DataStr.SlicedJsonDroppedGear>> item2 in RecentData.ToList())
-		{
-			SaveData(GetKeyTemplate(SaveKeyTemplateType.DropsData, item2.Key), JSON.Dump(item2.Value), seed);
-		}
-		foreach (KeyValuePair<string, Dictionary<string, bool>> item3 in RecentOpenableThings.ToList())
-		{
-			SaveData(GetKeyTemplate(SaveKeyTemplateType.Openables, item3.Key), JSON.Dump(item3.Value), seed);
-		}
-		foreach (KeyValuePair<string, Dictionary<string, DataStr.BrokenFurnitureSync>> item4 in RecentBrokenFurns.ToList())
-		{
-			SaveData(GetKeyTemplate(SaveKeyTemplateType.Furns, item4.Key), JSON.Dump(item4.Value), seed);
-		}
-		foreach (KeyValuePair<string, Dictionary<long, DataStr.PickedGearSync>> item5 in RecentPickedGears.ToList())
-		{
-			SaveData(GetKeyTemplate(SaveKeyTemplateType.PickedGears, item5.Key), JSON.Dump(item5.Value), seed);
-		}
-		foreach (KeyValuePair<string, Dictionary<string, int>> item6 in RecentlyLootedContainers.ToList())
-		{
-			SaveData(GetKeyTemplate(SaveKeyTemplateType.LootedContainers, item6.Key), JSON.Dump(item6.Value), seed);
-		}
-		foreach (KeyValuePair<string, Dictionary<string, int>> item7 in RecentlyHarvastedPlants.ToList())
-		{
-			SaveData(GetKeyTemplate(SaveKeyTemplateType.HarvestedPlants, item7.Key), JSON.Dump(item7.Value), seed);
-		}
-		RecentVisual = new Dictionary<string, Dictionary<int, DataStr.DroppedGearItemDataPacket>>();
-		RecentData = new Dictionary<string, Dictionary<int, DataStr.SlicedJsonDroppedGear>>();
-		RecentOpenableThings = new Dictionary<string, Dictionary<string, bool>>();
-		RecentBrokenFurns = new Dictionary<string, Dictionary<string, DataStr.BrokenFurnitureSync>>();
-		RecentPickedGears = new Dictionary<string, Dictionary<long, DataStr.PickedGearSync>>();
-		RecentlyLootedContainers = new Dictionary<string, Dictionary<string, int>>();
-		RecentlyHarvastedPlants = new Dictionary<string, Dictionary<string, int>>();
+		if (!changes.HasChanges) return true;
+
+		if (changes.SaveHashsChanged)
+			changes.SaveHashsChanged = !SaveData("UsersSaveHashes", JSON.Dump(changes.UsersSaveHashs), seed);
+		if (changes.LockedDoorsChanged)
+			changes.LockedDoorsChanged = !SaveData("LockedDoors", JSON.Dump(changes.LockedDoors), seed);
+		if (changes.AnimalsKilledChanged)
+			changes.AnimalsKilledChanged = !SaveData("KilledAnimals", JSON.Dump(changes.AnimalsKilled), seed);
+		if (changes.RockCachesChanged)
+			changes.RockCachesChanged = !SaveData("RockCaches", JSON.Dump(changes.RockCaches), seed);
+		if (changes.UniversalSyncableObjectsChanged)
+			changes.UniversalSyncableObjectsChanged = !SaveData("UniversalSyncables", JSON.Dump(changes.UniversalSyncableObjects), seed);
+
+		SaveRecentScenes(changes.RecentVisual, SaveKeyTemplateType.DropsVisual, seed);
+		SaveRecentScenes(changes.RecentData, SaveKeyTemplateType.DropsData, seed);
+		SaveRecentScenes(changes.RecentOpenableThings, SaveKeyTemplateType.Openables, seed);
+		SaveRecentScenes(changes.RecentBrokenFurns, SaveKeyTemplateType.Furns, seed);
+		SaveRecentScenes(changes.RecentPickedGears, SaveKeyTemplateType.PickedGears, seed);
+		SaveRecentScenes(changes.RecentlyLootedContainers, SaveKeyTemplateType.LootedContainers, seed);
+		SaveRecentScenes(changes.RecentlyHarvastedPlants, SaveKeyTemplateType.HarvestedPlants, seed);
 		if (stopwatch != null)
 		{
 			stopwatch.Stop();
 			Log("SaveRecentStuff() Took " + stopwatch.ElapsedMilliseconds + "ms");
+		}
+		return !changes.HasChanges;
+	}
+
+	private static void SaveRecentScenes<T>(Dictionary<string, T> scenes, SaveKeyTemplateType type, int seed)
+	{
+		foreach (var entry in scenes.ToList())
+		{
+			if (SaveData(GetKeyTemplate(type, entry.Key), JSON.Dump(entry.Value), seed))
+				scenes.Remove(entry.Key);
 		}
 	}
 

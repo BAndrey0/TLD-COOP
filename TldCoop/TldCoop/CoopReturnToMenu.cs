@@ -233,10 +233,6 @@ public static class CoopReturnToMenu
 					}
 					else
 					{
-						if (wasHost)
-						{
-							NotifyGuests();
-						}
 						stage = "saving";
 						status = "Сохранение персонажа и мира…";
 						MyMod.RequestSaveBeforeDisconnect(AfterLocalSave, allowOfflineWorld: true);
@@ -347,6 +343,7 @@ public static class CoopReturnToMenu
 	{
 		localSaved = true;
 		MelonLogger.Msg("[ReturnMenu] Local checkpoint committed");
+		if (wasHost) NotifyGuests();
 		WaitingPeers.RemoveWhere(id => !ShouldWaitForGuest(id));
 		if (wasHost && WaitingPeers.Count != 0)
 		{
@@ -378,6 +375,11 @@ public static class CoopReturnToMenu
 		if (requireCheckpoint && !localSaved)
 		{
 			throw new InvalidOperationException("Return-to-menu checkpoint was not committed");
+		}
+		if (requireCheckpoint && wasHost && !MyMod.TryFlushHostWorldForExit())
+		{
+			Fail("Изменения мира пока не записаны. Вы остались в игре; повторите выход.");
+			return;
 		}
 		unloading = true;
 		stage = "loading-menu";

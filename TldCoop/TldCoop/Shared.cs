@@ -233,7 +233,7 @@ public class Shared
 
 	public static int StartingRegionDS = 0;
 
-	public static System.Collections.Generic.Dictionary<string, DataStr.AnimalKilled> AnimalsKilled = new System.Collections.Generic.Dictionary<string, DataStr.AnimalKilled>();
+	public static System.Collections.Generic.Dictionary<string, DataStr.AnimalKilled> AnimalsKilled => MPSaveManager.AnimalsKilled;
 
 	public static System.Collections.Generic.Dictionary<string, int> StunnedRabbits = new System.Collections.Generic.Dictionary<string, int>();
 
@@ -2642,9 +2642,9 @@ public class Shared
 			{
 			case "save":
 				MPSaveManager.SaveGlobalData();
-				MPSaveManager.SaveRecentStuff();
+				bool saved = MPSaveManager.SaveRecentStuff();
 				MPStats.SaveRecentStuff();
-				return "Manual saving done!";
+				return saved ? "Manual saving done!" : "World changes could not be fully saved. Run save again.";
 			case "today":
 			case "showstats":
 			case "stats":

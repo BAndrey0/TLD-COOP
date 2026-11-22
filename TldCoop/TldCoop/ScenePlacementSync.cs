@@ -2116,9 +2116,9 @@ internal static class ScenePlacementSync
 
     internal static SceneWaterSync.Grant AcceptWater(string area, SceneWaterSync.Withdrawal request, int sender, bool inArea)
     {
-        var grant = SceneWaterSync.Accept(area, request, inArea);
+        var grant = SceneWaterSync.Accept(area, request, inArea, out var level);
         if (grant == null) return null;
-        if (inArea) SendToPeers(12, area, JsonSerializer.Serialize(new SceneWaterSync.Level(grant.Id, grant.Remaining)));
+        if (level != null) SendToPeers(12, area, JsonSerializer.Serialize(level));
         if (sender > 0)
         {
             using var reply = MakeServerPacket(23, area, JsonSerializer.Serialize(grant), 0, 0);

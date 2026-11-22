@@ -254,15 +254,14 @@ internal sealed partial class LauncherForm : Form
 			File.Exists(Path.Combine(dir, "game", "Mods", "SkyCoop.dll"))) && File.Exists(Path.Combine(dir, "Launch-Coop.ps1"));
 	}
 
+	private bool IsUpdateIncomplete() => !string.IsNullOrEmpty(state.installDirectory) &&
+		File.Exists(Path.Combine(state.installDirectory, ".update-incomplete"));
+
 	private Version InstalledVersion()
 	{
 		try
 		{
 			string file = Path.Combine(state.installDirectory, "coop-version.json");
-			if (!File.Exists(file))
-			{
-				file = Path.Combine(KitDir, "manifest.json");
-			}
 			if (File.Exists(file))
 			{
 				Dictionary<string, object> data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
@@ -281,20 +280,24 @@ internal sealed partial class LauncherForm : Form
 	private void RefreshView()
 	{
 		bool installed = IsInstalled(state.installDirectory);
-		Version current = installed ? InstalledVersion() : null;
+		bool incomplete = installed && IsUpdateIncomplete();
+		Version current = installed && !incomplete ? InstalledVersion() : null;
 		string latestText = (latest != null) ? (latest.Version.ToString(3) + (latest.Prerelease ? " (тестовая)" : "")) : "—";
 		versionLabel.Text = "Установлено: " + ((current != null) ? current.ToString(3) : (installed ? "неизвестно" : "нет")) + "    •    Последняя: " + latestText;
 		pathLabel.Text = installed ? ("Игра: " + state.installDirectory) : "Кооперативная копия игры ещё не установлена";
 		bool updateAvailable = installed && latest != null && (current == null || latest.Version > current);
-		RefreshDashboard(installed,current,updateAvailable);
-		playButton.Enabled = !busy && installed;
+		RefreshDashboard(installed,current,updateAvailable,incomplete);
+		playButton.Enabled = !busy && installed && !incomplete;
 		installButton.Enabled = !busy && latest != null && (!installed || updateAvailable);
-		installButton.Text = !installed ? "Установить" : (updateAvailable ? ("Обновить до " + latest.Version.ToString(3)) : "Обновлений нет");
+		installButton.Text = incomplete ? "Повторить обновление" :
+			!installed ? "Установить" : (updateAvailable ? ("Обновить до " + latest.Version.ToString(3)) : "Обновлений нет");
 		checkButton.Enabled = !busy;
 		testBuilds.Enabled = !busy;
 		if (!busy)
 		{
-			statusLabel.Text = !installed ? "Нажмите «Установить»: лаунчер найдёт игру в Steam, скопирует её и поставит мод." : (updateAvailable ? "Есть обновление. Все игроки должны быть на одной версии." : "Всё готово. Запустите Steam и нажмите «Играть».");
+			statusLabel.Text = incomplete
+				? (latest != null ? "Обновление прервано. Повторите его перед запуском." : "Обновление прервано. Проверьте обновления, чтобы повторить установку.")
+				: !installed ? "Нажмите «Установить»: лаунчер найдёт игру в Steam, скопирует её и поставит мод." : (updateAvailable ? "Есть обновление. Все игроки должны быть на одной версии." : "Всё готово. Запустите Steam и нажмите «Играть».");
 		}
 	}
 
@@ -672,7 +675,7 @@ internal sealed partial class LauncherForm : Form
 
 	private async Task Play()
 	{
-		if (busy || !IsInstalled(state.installDirectory))
+		if (busy || !IsInstalled(state.installDirectory) || IsUpdateIncomplete())
 		{
 			return;
 		}
@@ -682,6 +685,7 @@ internal sealed partial class LauncherForm : Form
 			if (current != null && latest.Version > current && MessageBox.Show(this, "Доступна версия " + latest.Version.ToString(3) + ". Обновиться перед запуском? Все игроки должны быть на одной версии.", Text, MessageBoxButtons.YesNo) == DialogResult.Yes)
 			{
 				await InstallOrUpdate();
+				if (IsUpdateIncomplete()) return;
 			}
 		}
 		if (Process.GetProcessesByName("steam").Length == 0)

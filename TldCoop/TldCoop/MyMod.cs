@@ -1761,7 +1761,6 @@ public class MyMod : MelonMod
 				HUDMessage.AddMessage("Сохраняем содержимое контейнера перед выходом…");
 			return;
 		}
-		CoopReturnToMenu.NotifyGuestsHostLeaving();
 		PendingSaveExitAction = SaveExitAction.Quit;
 		AfterSavedDisconnect = null;
 		if (!Pathes.QuitOnSave && !SaveBeforeQuitRequested && !QuitWhenSaveOperationFinished)
@@ -10314,6 +10313,23 @@ public class MyMod : MelonMod
 
 	private static float DiskCommitWaitStarted = -1f;
 
+	internal static bool TryFlushHostWorldForExit()
+	{
+		if (!iAmHost) return true;
+		try
+		{
+			if (MPSaveManager.SaveRecentStuff()) return true;
+		}
+		catch (System.Exception ex)
+		{
+			MelonLogger.Error("[SaveQuit] Failed to write world changes: " + ex);
+		}
+		AfterSavedDisconnect = null;
+		Pathes.ResetPendingQuitAfterSaveFailure();
+		HUDMessage.AddMessage("Не удалось сохранить изменения мира. Повторите выход.");
+		return false;
+	}
+
 	public static void SaveCheck()
 	{
 		if (SaveBeforeQuitRequested)
@@ -10326,10 +10342,9 @@ public class MyMod : MelonMod
 			try
 			{
 				DoPleaseWait("Saving", (PendingSaveExitAction == SaveExitAction.Disconnect) ? "Saving before disconnect..." : "Saving before exit...");
-				if (iAmHost)
-				{
-					MPSaveManager.SaveRecentStuff();
-				}
+				if (!TryFlushHostWorldForExit()) return;
+				if (PendingSaveExitAction == SaveExitAction.Quit)
+					CoopReturnToMenu.NotifyGuestsHostLeaving();
 				GameManager.ForceSaveGame();
 			}
 			catch (System.Exception ex)
@@ -10400,6 +10415,7 @@ public class MyMod : MelonMod
 		}
 		if (PendingSaveExitAction == SaveExitAction.Quit)
 		{
+			if (!TryFlushHostWorldForExit()) return;
 			if (SaveGameSystem.IsAsyncEnabled())
 			{
 				SaveGameSystem.SetAsyncEnabled(enabled: false);
