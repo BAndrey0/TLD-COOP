@@ -155,7 +155,7 @@ public static class CoopReturnToMenu
 		localSaved = false;
 		stage = "closing-container";
 		status = "Подготовка выхода в главное меню…";
-		containerDeadline = Clock.Elapsed.TotalSeconds + 20.0;
+		containerDeadline = Clock.Elapsed.TotalSeconds + MyMod.ExitConfirmationTimeoutSeconds;
 		nextCloseAttempt = 0.0;
 		lastNotice = "";
 		WaitingPeers.Clear();
@@ -192,7 +192,7 @@ public static class CoopReturnToMenu
 			{
 				if (stage == "closing-container")
 				{
-					if (CuringStorageSync.HasPendingCommit || SceneWaterSync.HasPending)
+					if (!MyMod.PrepareWorldInteractionsForExit())
 					{
 						status = "Ожидание подтверждения изменений мира…";
 						if (Clock.Elapsed.TotalSeconds >= containerDeadline)
@@ -210,7 +210,8 @@ public static class CoopReturnToMenu
 						return;
 					}
 					Panel_Container panel_Container = GameCompat.Panel<Panel_Container>();
-					if (ContainerLootSync.HasPendingUpload || (panel_Container != null && panel_Container.isActiveAndEnabled))
+					if (ContainerLootSync.InventoryUncommitted || ContainerLootSync.HasPendingUpload ||
+						(panel_Container != null && panel_Container.isActiveAndEnabled))
 					{
 						status = (ContainerLootSync.HasPendingUpload ? "Сохранение находок…" : "Завершение обыска…");
 						if (!ContainerLootSync.HasPendingUpload && panel_Container != null && panel_Container.isActiveAndEnabled && Clock.Elapsed.TotalSeconds >= nextCloseAttempt)

@@ -1704,6 +1704,7 @@ public class MyMod : MelonMod
 		PendingSaveHashToSend = 0L;
 		PendingSlotDiskCommit = null;
 		AfterSavedDisconnect = null;
+		quitConfirmationDeadline = 0;
 		PendingSaveExitAction = SaveExitAction.Quit;
 		return true;
 	}
@@ -1734,7 +1735,6 @@ public class MyMod : MelonMod
 	{
 		if (!IReallyWantToQuit && SaveExitPending)
 		{
-			RequestSaveBeforeQuit();
 			return false;
 		}
 		if (IReallyWantToQuit || DedicatedServerAppMode || !InOnline() || level_name == "Empty" || level_name == "Boot" || Shared.IsMainMenuScene(level_name))
@@ -1751,38 +1751,61 @@ public class MyMod : MelonMod
 
 	public static void RequestSaveBeforeQuit()
 	{
-		if (ContainerLootSync.InventoryUncommitted || ContainerLootSync.HasPendingUpload)
+		if (SaveExitPending || CoopReturnToMenu.InProgress || quitConfirmationDeadline != 0) return;
+
+		bool worldReady = PrepareWorldInteractionsForExit();
+		bool containerPending = HasPendingQuitContainer;
+		if (!worldReady || containerPending)
 		{
-			quitAfterContainer = true;
-			if (CoopContainerFlow.HasActiveSearch) CoopContainerFlow.FinishSearch();
-			else if (!ContainerLootSync.HasPendingUpload && GameCompat.Panel<Panel_Container>() is { isActiveAndEnabled: true } box)
-				box.OnDone();
-			if (!SaveBeforeQuitRequested)
-				HUDMessage.AddMessage("Сохраняем содержимое контейнера перед выходом…");
+			quitConfirmationDeadline = Time.realtimeSinceStartup + ExitConfirmationTimeoutSeconds;
+			if (containerPending)
+			{
+				if (CoopContainerFlow.HasActiveSearch) CoopContainerFlow.FinishSearch();
+				else if (!ContainerLootSync.HasPendingUpload && GameCompat.Panel<Panel_Container>() is { isActiveAndEnabled: true } box)
+					box.OnDone();
+			}
+			HUDMessage.AddMessage("Ожидаем подтверждения изменений мира перед выходом…");
 			return;
 		}
-		PendingSaveExitAction = SaveExitAction.Quit;
-		AfterSavedDisconnect = null;
-		if (!Pathes.QuitOnSave && !SaveBeforeQuitRequested && !QuitWhenSaveOperationFinished)
-		{
-			Pathes.QuitOnSave = true;
-			QuitWithoutSaving = true;
-			NoMelonQuit = false;
-			SaveBeforeQuitRequested = true;
-			MelonLogger.Msg("[SaveQuit] Save queued before the native quit lifecycle.");
-		}
+		QueueQuitSave();
 	}
 
-	private static bool quitAfterContainer;
+	internal const float ExitConfirmationTimeoutSeconds = 20f;
+	private static float quitConfirmationDeadline;
+
+	internal static bool PrepareWorldInteractionsForExit() =>
+		CuringStorageSync.TryFinishForExit() && (!InOnline() || !SceneWaterSync.HasPending);
+
+	private static bool HasPendingQuitContainer => ContainerLootSync.InventoryUncommitted || ContainerLootSync.HasPendingUpload;
+
+	private static void QueueQuitSave()
+	{
+		PendingSaveExitAction = SaveExitAction.Quit;
+		AfterSavedDisconnect = null;
+		Pathes.QuitOnSave = true;
+		QuitWithoutSaving = true;
+		NoMelonQuit = false;
+		SaveBeforeQuitRequested = true;
+		MelonLogger.Msg("[SaveQuit] Save queued before the native quit lifecycle.");
+	}
 
 	private static void FinishDeferredQuit()
 	{
-		if (!quitAfterContainer) return;
-		if (!InOnline() || Shared.IsMainMenuScene(level_name)) quitAfterContainer = false;
-		else if (!ContainerLootSync.InventoryUncommitted && !ContainerLootSync.HasPendingUpload)
+		if (quitConfirmationDeadline == 0) return;
+		if (!InOnline() || Shared.IsMainMenuScene(level_name) || SaveExitPending || CoopReturnToMenu.InProgress)
 		{
-			quitAfterContainer = false;
-			RequestSaveBeforeQuit();
+			quitConfirmationDeadline = 0;
+			return;
+		}
+		if (PrepareWorldInteractionsForExit() && !HasPendingQuitContainer)
+		{
+			quitConfirmationDeadline = 0;
+			QueueQuitSave();
+		}
+		else if (Time.realtimeSinceStartup >= quitConfirmationDeadline)
+		{
+			quitConfirmationDeadline = 0;
+			HUDMessage.AddMessage("Изменения мира ещё не подтверждены. Вы остались в игре.");
 		}
 	}
 
@@ -10334,6 +10357,14 @@ public class MyMod : MelonMod
 	{
 		if (SaveBeforeQuitRequested)
 		{
+			if (PendingSaveExitAction == SaveExitAction.Quit && InOnline() &&
+				(!PrepareWorldInteractionsForExit() || HasPendingQuitContainer))
+			{
+				SaveBeforeQuitRequested = false;
+				Pathes.ResetPendingQuitAfterSaveFailure();
+				RequestSaveBeforeQuit();
+				return;
+			}
 			if (SaveGameData.IsAnyOperationPending() || SaveGameSystem.IsAsyncSaveRunning() || SaveGameSystem.IsWaitingForScreenshot())
 			{
 				return;

@@ -26,6 +26,14 @@ internal static class CuringStorageSync
     private static readonly Queue<Guid> SavedOrder = new();
     internal static bool HasPendingCommit => saving.Update != null;
 
+    internal static bool TryFinishForExit()
+    {
+        if (!MyMod.InOnline()) return true;
+        if (pending != null && current != null && current.m_ShowingPanel && !closing)
+            current.CloseCuringStorage();
+        return pending == null && !HasPendingCommit;
+    }
+
     private static string Id(CuringStorage box) => ScenePlacementSync.FurnitureIdentity(box.gameObject);
     private static string File(string scene, string id) => scene + "_Curing_" + Shared.StableHash(id).ToString("X8");
     private static string Snapshot(CuringStorage box) => Utils.SerializeObject(box.SerializeCuringStorage());
