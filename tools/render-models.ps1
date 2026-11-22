@@ -1,5 +1,5 @@
 # One automated render fixture; no world load, server, UI input, or player saves.
-param([string]$GameDir=(Join-Path $PSScriptRoot '..\..\player\game'),[switch]$Alignment,[switch]$Catalog,[switch]$Switching)
+param([string]$GameDir=(Join-Path $PSScriptRoot '..\..\player\game'),[switch]$Alignment,[switch]$Catalog,[switch]$Switching,[switch]$WardrobeStudy)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $GameDir=[IO.Path]::GetFullPath($GameDir)
@@ -15,6 +15,7 @@ $render=Join-Path $qa ('models-'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')+
 $vars=@{DOTNET_ROOT=(Join-Path (Split-Path $GameDir -Parent) 'runtime');DOTNET_MULTILEVEL_LOOKUP='0';SteamAppId='305620';SteamGameId='305620';TLD_COOP_TEST_SAVE_ROOT=(Join-Path $qa 'saves');TLD_COOP_MODEL_ONLY_TEST='1';TLD_COOP_MODEL_RENDER=$render}
 if($Catalog){$render=[IO.Path]::ChangeExtension($render,'txt');$vars['TLD_COOP_MODEL_RENDER']=$render;$vars['TLD_COOP_CATALOG_PROBE']='1'}
 if($Switching){$render=[IO.Path]::ChangeExtension($render,'txt');$vars['TLD_COOP_MODEL_RENDER']=$render;$vars['TLD_COOP_MODEL_SWITCHING_TEST']='1'}
+if($WardrobeStudy){$render=[IO.Path]::ChangeExtension($render,'txt');$vars['TLD_COOP_MODEL_RENDER']=$render;$vars['TLD_COOP_WARDROBE_STUDY']='1'}
 $saved=@{};$child=$null
 if($Alignment){$vars['TLD_COOP_MODEL_ALIGNMENT_TEST']='1'}
 try{
@@ -24,8 +25,9 @@ try{
  $child=Start-Process -FilePath (Join-Path $GameDir 'tld.exe') -WorkingDirectory $GameDir -WindowStyle Hidden -ArgumentList ('--melonloader.disablestartscreen --melonloader.hideconsole -screen-fullscreen 0 -screen-width 1280 -screen-height 720 -logFile "'+$log+'"') -PassThru
  Write-Host 'Running isolated native probe; automatic exit (90s limit).'
  $timer=[Diagnostics.Stopwatch]::StartNew()
- while(!$child.WaitForExit(1000)){if((Test-Path -LiteralPath $render) -and (Get-Item -LiteralPath $render).Length -gt 1000){$null=$child.WaitForExit(2000);break};if($timer.Elapsed.TotalSeconds -gt 90){throw 'Model render timed out.'}}
+ while(!$child.WaitForExit(1000)){if(!$WardrobeStudy -and (Test-Path -LiteralPath $render) -and (Get-Item -LiteralPath $render).Length -gt 1000){$null=$child.WaitForExit(2000);break};if($timer.Elapsed.TotalSeconds -gt 90){throw 'Model render timed out.'}}
  if(!(Test-Path -LiteralPath $render)){throw ('No render produced; inspect '+$log)}
+ if($WardrobeStudy -and !(Select-String -LiteralPath $render -SimpleMatch 'PASS completed standard avatar wardrobe study' -Quiet)){throw ('Wardrobe study did not complete; inspect '+$render)}
  Write-Host ('Render: '+$render)
 }finally{
  if($child -and !$child.HasExited){$child.Kill();if(!$child.WaitForExit(8000)){throw 'Test process did not stop; restore original.dll manually before playing.'}}

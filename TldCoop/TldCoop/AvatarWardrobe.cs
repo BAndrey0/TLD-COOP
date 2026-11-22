@@ -142,7 +142,13 @@ internal sealed class AvatarWardrobe
         };
     }
 
-    private static Garment Build(Transform avatar, SkinnedMeshRenderer reference, string gear, Part part, bool underCoat)
+    internal static (Mesh Mesh, Material[] Materials) StudyCoat(Transform avatar, SkinnedMeshRenderer reference, string gear, bool surface)
+    {
+        var result = Build(avatar, reference, gear, Part.Coat, underCoat: false, surfaceStudy: surface);
+        return (result?.Mesh, result?.Materials);
+    }
+
+    private static Garment Build(Transform avatar, SkinnedMeshRenderer reference, string gear, Part part, bool underCoat, bool surfaceStudy = false)
     {
         var item = MyMod.GetGearItemPrefab(gear);
         if (item == null || item.m_ClothingItem == null) return null;
@@ -244,6 +250,7 @@ internal sealed class AvatarWardrobe
                     (IsArm(weight.boneIndex3) ? weight.weight3 : 0f) > .25f;
             }
         }
+        var surface = surfaceStudy ? new WardrobeSurfaceStudy(referencePoints, referenceMesh.triangles, referenceIsArm, weights) : null;
         // Transform each vertex back to bind space using the same weights
         // Unity will use to bring it forward into the fitting pose.
         for (int i = 0; i < points.Length; i++)
@@ -281,6 +288,8 @@ internal sealed class AvatarWardrobe
                 }
             }
             if (rigidBone >= 0) outputWeights[i] = new BoneWeight { boneIndex0 = rigidBone, weight0 = 1f };
+            else if (surface != null)
+                outputWeights[i] = surface.Sample(fitted, sleeve, height);
             else
             {
                 int nearest = 0;

@@ -220,6 +220,22 @@ public static class SelfTest
 			MelonCoroutines.Start(CheckModelSwitching(prefab, probeCamera));
 			return;
 		}
+		if (Environment.GetEnvironmentVariable("TLD_COOP_WARDROBE_STUDY") == "1")
+		{
+			string output = Environment.GetEnvironmentVariable("TLD_COOP_MODEL_RENDER");
+			try
+			{
+				WardrobeProbe.Run(System.IO.Path.ChangeExtension(output, ".assets.txt"), includeStory: false);
+				WardrobeStudy.Run(prefab, output, (file, eye, center) => CaptureModelSwitch(probeCamera, file, eye, center, 1500, 800));
+			}
+			catch (Exception ex)
+			{
+				MelonLogger.Error("[Wardrobe study] " + ex);
+				System.IO.File.AppendAllText(output, "ERROR " + ex);
+			}
+			finally { Application.Quit(); }
+			return;
+		}
 		var avatars = new List<GameObject>();
 		for(int choice=0;choice<6;choice++)
 		{
@@ -380,20 +396,20 @@ public static class SelfTest
 		Application.Quit();
 	}
 
-	private static void CaptureModelSwitch(Camera camera, string output, Vector3 eye, float center)
+	private static void CaptureModelSwitch(Camera camera, string output, Vector3 eye, float center, int width = 960, int height = 1200)
 	{
 		camera.transform.SetPositionAndRotation(eye, Quaternion.LookRotation(Vector3.up * center - eye));
 		camera.fieldOfView = 46f;
 		var previous = RenderTexture.active;
-		var target = RenderTexture.GetTemporary(960, 1200, 24, RenderTextureFormat.ARGB32);
-		var image = new Texture2D(960, 1200, TextureFormat.RGB24, false);
+		var target = RenderTexture.GetTemporary(width, height, 24, RenderTextureFormat.ARGB32);
+		var image = new Texture2D(width, height, TextureFormat.RGB24, false);
 		try
 		{
-			camera.aspect = .8f;
+			camera.aspect = (float)width / height;
 			camera.targetTexture = target;
 			camera.Render();
 			RenderTexture.active = target;
-			image.ReadPixels(new Rect(0, 0, 960, 1200), 0, 0, false);
+			image.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
 			image.Apply();
 			System.IO.File.WriteAllBytes(output, image.EncodeToJPG(92));
 		}
