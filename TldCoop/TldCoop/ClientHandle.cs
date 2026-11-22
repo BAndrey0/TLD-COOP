@@ -45,7 +45,7 @@ public class ClientHandle
 		{
 			packet.Write(ClientUser.myId);
 			packet.Write(MyMod.MyChatName);
-			packet.Write("0.16.40");
+			packet.Write(MyMod.BuildInfo.Version);
 			packet.Write(Supporters.MyID);
 			packet.Write(Supporters.ConfiguratedBenefits);
 			packet.Write(ModsValidation.GetModsHash(Force: true, ModsWhiteList).m_Hash);
@@ -125,10 +125,15 @@ public class ClientHandle
 		MyMod.GiveRecivedItem(gearItemDataPacket);
 	}
 
+	private static int lastServerClockMinute = int.MinValue;
+
 	public static void GAMETIME(Packet _packet)
 	{
-		MyMod.OveridedTime = _packet.ReadString();
+		string displayTime = _packet.ReadString();
 		int minute = _packet.ReadInt();
+		if (minute < lastServerClockMinute) return;
+		lastServerClockMinute = minute;
+		MyMod.OveridedTime = displayTime;
 		FireHeatSync.SyncCookingClock(minute);
 		MyMod.MinutesFromStartServer = minute;
 		ThrownFlareSync.ClockSync();
@@ -452,6 +457,7 @@ public class ClientHandle
 
 	internal static void ResetSaveJoin()
 	{
+		lastServerClockMinute = int.MinValue;
 		WorldSaveIdentity.ClearPendingResume();
 		receivedSaveData = false;
 		awaitingSaveVerification = false;

@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.40";
+		public const string Version = "0.16.41";
 
 		public const string DownloadLink = null;
 
@@ -1812,7 +1812,7 @@ public class MyMod : MelonMod
 
 	public override void OnApplicationQuit()
 	{
-		CoopReturnToMenu.NotifyGuestsHostLeaving();
+		if (!IReallyWantToQuit && iAmHost) CoopReturnToMenu.NotifyGuests();
 		if ((!(level_name != "Empty") || !(level_name != "Boot") || Shared.IsMainMenuScene(level_name) || !InOnline() || IReallyWantToQuit || DedicatedServerAppMode || (QuitWithoutSaving && !Pathes.QuitOnSave && !SaveBeforeQuitRequested && !QuitWhenSaveOperationFinished)) && InOnline())
 		{
 			MelonLogger.Msg("[CLIENT] Disconnect cause quit game");
@@ -7906,66 +7906,31 @@ public class MyMod : MelonMod
 				packet.Write(droppedGearItemDataPacket);
 				SendUDPData(packet);
 			}
-			byte[] bytes = Encoding.UTF8.GetBytes(text5);
-			if (bytes.Length > 500)
+			bool sliced = false;
+			foreach (var (sliceText, last) in GearJsonSlices.Split(text5))
 			{
-				System.Collections.Generic.List<byte> list = new System.Collections.Generic.List<byte>();
-				list.AddRange(bytes);
-				while (list.Count >= 500)
+				var slice = new DataStr.SlicedJsonData
 				{
-					byte[] bytes2 = list.GetRange(0, 499).ToArray();
-					list.RemoveRange(0, 499);
-					string str = Encoding.UTF8.GetString(bytes2);
-					DataStr.SlicedJsonData slicedJsonData = new DataStr.SlicedJsonData();
-					slicedJsonData.m_GearName = text4;
-					slicedJsonData.m_SendTo = -1;
-					slicedJsonData.m_Hash = hash;
-					slicedJsonData.m_Str = str;
-					if (list.Count != 0)
-					{
-						slicedJsonData.m_Last = false;
-					}
-					else
-					{
-						slicedJsonData.m_Last = true;
-					}
-					AddGearCarefulSlice(slicedJsonData);
+					m_GearName = text4,
+					m_SendTo = -1,
+					m_Hash = hash,
+					m_Str = sliceText,
+					m_Last = last
+				};
+				if (last) slice.m_Extra = extraDataForDroppedGear;
+				if (sliced || !last)
+				{
+					sliced = true;
+					AddGearCarefulSlice(slice);
 				}
-				if (list.Count < 500 && list.Count != 0)
+				else
 				{
-					byte[] bytes3 = list.GetRange(0, list.Count).ToArray();
-					list.RemoveRange(0, list.Count);
-					string str2 = Encoding.UTF8.GetString(bytes3);
-					DataStr.SlicedJsonData slicedJsonData2 = new DataStr.SlicedJsonData();
-					slicedJsonData2.m_GearName = text4;
-					slicedJsonData2.m_SendTo = -1;
-					slicedJsonData2.m_Hash = hash;
-					slicedJsonData2.m_Str = str2;
-					slicedJsonData2.m_Last = true;
-					slicedJsonData2.m_Extra = extraDataForDroppedGear;
-					if (sendMyPosition)
-					{
-						AddGearCarefulSlice(slicedJsonData2);
-					}
-					SendNextGearCarefulSlice();
+					using var packet = new Packet(86);
+					packet.Write(slice);
+					SendUDPData(packet);
 				}
 			}
-			else
-			{
-				DataStr.SlicedJsonData slicedJsonData3 = new DataStr.SlicedJsonData();
-				slicedJsonData3.m_GearName = text4;
-				slicedJsonData3.m_SendTo = -1;
-				slicedJsonData3.m_Hash = hash;
-				slicedJsonData3.m_Str = text5;
-				slicedJsonData3.m_Last = true;
-				slicedJsonData3.m_Extra = extraDataForDroppedGear;
-				if (sendMyPosition)
-				{
-					using Packet packet2 = new Packet(86);
-					packet2.Write(slicedJsonData3);
-					SendUDPData(packet2);
-				}
-			}
+			if (sliced) SendNextGearCarefulSlice();
 		}
 		if (iAmHost)
 		{
@@ -10388,8 +10353,6 @@ public class MyMod : MelonMod
 			{
 				DoPleaseWait("Saving", (PendingSaveExitAction == SaveExitAction.Disconnect) ? "Saving before disconnect..." : "Saving before exit...");
 				if (!TryFlushHostWorldForExit()) return;
-				if (PendingSaveExitAction == SaveExitAction.Quit)
-					CoopReturnToMenu.NotifyGuestsHostLeaving();
 				GameManager.ForceSaveGame();
 			}
 			catch (System.Exception ex)
@@ -10460,7 +10423,7 @@ public class MyMod : MelonMod
 		}
 		if (PendingSaveExitAction == SaveExitAction.Quit)
 		{
-			if (!TryFlushHostWorldForExit()) return;
+			if (!TryFlushHostWorldForExit() || CoopReturnToMenu.WaitForGuestsBeforeQuit()) return;
 			if (SaveGameSystem.IsAsyncEnabled())
 			{
 				SaveGameSystem.SetAsyncEnabled(enabled: false);

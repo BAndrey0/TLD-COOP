@@ -1098,10 +1098,11 @@ public class Shared
 		if (id == 0)
 			return MyMod.iAmHost && MyMod.WildlifeSceneReady() ? MyMod.level_guid : "";
 		if (id < 0 || id >= MyMod.playersData.Count || MyMod.playersData[id] == null ||
-			!Server.clients.TryGetValue(id, out var client) || !client.IsBusy() || client.RCON)
+			!Server.clients.TryGetValue(id, out var client) || !client.IsBusy() || client.RCON || client.Departing)
 			return "";
 		var data = MyMod.playersData[id];
-		return data.m_WildlifeReadyScene;
+		return WildlifeSpawnAuthorityPolicy.SameScene(data.m_LevelGuid, data.m_WildlifeReadyScene)
+			? data.m_WildlifeReadyScene : "";
 	}
 
 	public static int WildlifeSpawnerForScene(string scene)
@@ -1360,79 +1361,19 @@ public class Shared
 
 	public static void SendDroppedItemToPicker(string DataProxy, int GiveItemTo, int SearchKey, int GearID, bool place, DataStr.ExtraDataForDroppedGear Extra)
 	{
-		byte[] bytes = Encoding.UTF8.GetBytes(DataProxy);
-		Log("Going to send gear to client " + GiveItemTo + " bytes: " + bytes.Length);
-		if (bytes.Length > 500)
+		foreach (var (text, last) in GearJsonSlices.Split(DataProxy))
 		{
-			System.Collections.Generic.List<byte> list = new System.Collections.Generic.List<byte>();
-			list.AddRange(bytes);
-			while (list.Count >= 500)
+			var slice = new DataStr.SlicedJsonData
 			{
-				byte[] bytes2 = list.GetRange(0, 499).ToArray();
-				list.RemoveRange(0, 499);
-				string str = Encoding.UTF8.GetString(bytes2);
-				DataStr.SlicedJsonData slicedJsonData = new DataStr.SlicedJsonData();
-				slicedJsonData.m_GearName = MyMod.level_guid;
-				slicedJsonData.m_SendTo = GearID;
-				slicedJsonData.m_Hash = SearchKey;
-				slicedJsonData.m_Str = str;
-				if (list.Count != 0)
-				{
-					slicedJsonData.m_Last = false;
-				}
-				else
-				{
-					slicedJsonData.m_Last = true;
-					slicedJsonData.m_Extra = Extra;
-				}
-				if (!place)
-				{
-					ServerSend.GETREQUESTEDITEMSLICE(GiveItemTo, slicedJsonData);
-				}
-				else
-				{
-					ServerSend.GETREQUESTEDFORPLACESLICE(GiveItemTo, slicedJsonData);
-				}
-			}
-			if (list.Count < 500 && list.Count != 0)
-			{
-				byte[] bytes3 = list.GetRange(0, list.Count).ToArray();
-				list.RemoveRange(0, list.Count);
-				string str2 = Encoding.UTF8.GetString(bytes3);
-				DataStr.SlicedJsonData slicedJsonData2 = new DataStr.SlicedJsonData();
-				slicedJsonData2.m_GearName = MyMod.level_guid;
-				slicedJsonData2.m_SendTo = GearID;
-				slicedJsonData2.m_Hash = SearchKey;
-				slicedJsonData2.m_Str = str2;
-				slicedJsonData2.m_Last = true;
-				slicedJsonData2.m_Extra = Extra;
-				if (!place)
-				{
-					ServerSend.GETREQUESTEDITEMSLICE(GiveItemTo, slicedJsonData2);
-				}
-				else
-				{
-					ServerSend.GETREQUESTEDFORPLACESLICE(GiveItemTo, slicedJsonData2);
-				}
-			}
-		}
-		else
-		{
-			DataStr.SlicedJsonData slicedJsonData3 = new DataStr.SlicedJsonData();
-			slicedJsonData3.m_GearName = MyMod.level_guid;
-			slicedJsonData3.m_SendTo = GearID;
-			slicedJsonData3.m_Hash = SearchKey;
-			slicedJsonData3.m_Str = DataProxy;
-			slicedJsonData3.m_Last = true;
-			slicedJsonData3.m_Extra = Extra;
-			if (!place)
-			{
-				ServerSend.GETREQUESTEDITEMSLICE(GiveItemTo, slicedJsonData3);
-			}
-			else
-			{
-				ServerSend.GETREQUESTEDFORPLACESLICE(GiveItemTo, slicedJsonData3);
-			}
+				m_GearName = MyMod.level_guid,
+				m_SendTo = GearID,
+				m_Hash = SearchKey,
+				m_Str = text,
+				m_Last = last
+			};
+			if (last) slice.m_Extra = Extra;
+			if (place) ServerSend.GETREQUESTEDFORPLACESLICE(GiveItemTo, slice);
+			else ServerSend.GETREQUESTEDITEMSLICE(GiveItemTo, slice);
 		}
 	}
 

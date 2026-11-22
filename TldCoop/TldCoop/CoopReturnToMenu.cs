@@ -158,7 +158,7 @@ public static class CoopReturnToMenu
 		containerDeadline = Clock.Elapsed.TotalSeconds + MyMod.ExitConfirmationTimeoutSeconds;
 		nextCloseAttempt = 0.0;
 		lastNotice = "";
-		WaitingPeers.Clear();
+		ResetGuestWait();
 		MyMod.DiscardRepeatPacket();
 		CoopContainerFlow.FinishSearch();
 		MelonLogger.Msg("[ReturnMenu] Requested role=" + (wasHost ? "host" : "guest"));
@@ -258,6 +258,7 @@ public static class CoopReturnToMenu
 							noticeUntil = Clock.Elapsed.TotalSeconds + 12.0;
 							MelonLogger.Warning("[ReturnMenu] Ending host after local checkpoint; unconfirmed guests=" + WaitingPeers.Count);
 						}
+						ResetGuestWait();
 						LoadMenuAfterCheckpoint();
 					}
 					else
@@ -275,27 +276,22 @@ public static class CoopReturnToMenu
 	}
 
 	// The host closing the game (QUIT GAME, window closed) used to leave guests in a world without a server.
-	public static void NotifyGuestsHostLeaving()
+	internal static bool WaitForGuestsBeforeQuit()
 	{
-		if (!MyMod.iAmHost)
-		{
-			return;
-		}
-		try
-		{
-			foreach (KeyValuePair<int, Client> client in Server.clients)
-			{
-				if (client.Key > 0 && client.Value != null && !client.Value.RCON && client.Value.IsBusy())
-				{
-					ServerSend.KICKMESSAGE(client.Key, "COOP_RETURN_MENU: Host is returning to the main menu.");
-				}
-			}
-			MelonLogger.Msg("[ReturnMenu] Guests told that the host is leaving");
-		}
-		catch (Exception ex)
-		{
-			MelonLogger.Warning("[ReturnMenu] Notifying guests: " + ex.Message);
-		}
+		if (!MyMod.iAmHost) return false;
+		if (peerDeadline == 0) NotifyGuests();
+		WaitingPeers.RemoveWhere(id => !ShouldWaitForGuest(id));
+		if (WaitingPeers.Count > 0 && Clock.Elapsed.TotalSeconds < peerDeadline) return true;
+		if (WaitingPeers.Count > 0)
+			MelonLogger.Warning("[SaveQuit] Unconfirmed guest checkpoints: " + WaitingPeers.Count);
+		ResetGuestWait();
+		return false;
+	}
+
+	internal static void ResetGuestWait()
+	{
+		WaitingPeers.Clear();
+		peerDeadline = 0;
 	}
 
 	// Guest side: the host left the Steam lobby without the return message (crash, killed process, lost connection).
@@ -308,9 +304,9 @@ public static class CoopReturnToMenu
 		ConnectionLost("Хост покинул сессию.");
 	}
 
-	private static void NotifyGuests()
+	internal static void NotifyGuests()
 	{
-		peerDeadline = Clock.Elapsed.TotalSeconds + 15.0;
+		peerDeadline = Clock.Elapsed.TotalSeconds + MyMod.ExitConfirmationTimeoutSeconds + 25.0;
 		foreach (KeyValuePair<int, Client> client in Server.clients)
 		{
 			if (ShouldWaitForGuest(client.Key))
@@ -353,6 +349,7 @@ public static class CoopReturnToMenu
 		}
 		else
 		{
+			ResetGuestWait();
 			LoadMenuAfterCheckpoint();
 		}
 	}

@@ -25,6 +25,9 @@ public static class WildlifeSpawnAuthorityPolicy
 		return false;
 	}
 
+	public static bool AcceptSceneReport(string currentScene, string reportScene, long previousSequence, long sequence) =>
+		sequence > previousSequence && SameScene(currentScene, reportScene);
+
 	public static bool AcceptGrant(bool ready, string currentScene, string grantScene)
 	{
 		return ready && SameScene(currentScene, grantScene);

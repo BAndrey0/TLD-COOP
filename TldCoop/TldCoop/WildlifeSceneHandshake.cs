@@ -10,6 +10,7 @@ public static class WildlifeSceneHandshake
 	private static float nextSend;
 	private static string lastScene = "";
 	private static bool lastReady;
+	private static long sequence;
 
 	public static void Reset()
 	{
@@ -31,7 +32,10 @@ public static class WildlifeSceneHandshake
 		lastScene = scene; lastReady = ready;
 		if (MyMod.iAmHost) return;
 		using var packet = new Packet((int)ClientPackets.WILDLIFESCENEREADY);
-		packet.Write(scene); packet.Write(MyMod.levelid); packet.Write(ready);
+		packet.Write(scene);
+		packet.Write(MyMod.levelid);
+		packet.Write(ready);
+		packet.Write(++sequence);
 		MyMod.SendUDPData(packet);
 	}
 }

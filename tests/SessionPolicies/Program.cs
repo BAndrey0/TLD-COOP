@@ -8,6 +8,22 @@ static class Program
  static void Main()
  {
   MyMod.sendMyPosition = true;
+  foreach (string input in new[] { "", new string('A', 500), new string('A', 498) + "я" + new string('я', 400),
+      new string('A', 497) + "🧤" + new string('я', 300) })
+  {
+   var text = new System.Text.StringBuilder();
+   bool lastSeen = false;
+   foreach (var slice in GearJsonSlices.Split(input))
+   {
+    Check(!lastSeen && System.Text.Encoding.UTF8.GetByteCount(slice.Text) <= 500, "Item payload fits and terminates once");
+    text.Append(slice.Text);
+    lastSeen = slice.Last;
+   }
+   Check(lastSeen && text.ToString() == input, "Item payload preserves a UTF-8 character at a slice boundary");
+  }
+  Check(WildlifeSpawnAuthorityPolicy.AcceptSceneReport("Farm", "Farm", 5, 6), "Accept fresh wildlife readiness for the current scene");
+  Check(!WildlifeSpawnAuthorityPolicy.AcceptSceneReport("Farm", "Farm", 6, 5), "Ignore an older readiness report during handoff");
+  Check(!WildlifeSpawnAuthorityPolicy.AcceptSceneReport("Farm", "Mine", 5, 6), "A guest cannot retain authority in the unloaded scene");
   var escapedCooking = System.Text.Json.JsonSerializer.Serialize(new { NativeHover = new string('я', 300), Meshes = new string('A', 256) });
   Check(escapedCooking.Length > 1100 && escapedCooking.Length <= SceneMessageLimits.PayloadLimit(2), "Escaped Russian cooking labels must pass the scene packet size check");
         Check(SceneMessageLimits.PayloadLimit(1) == 4096, "Furniture replays can carry bounded position history");

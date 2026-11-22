@@ -33,9 +33,9 @@ internal class ServerHandle
 		}
 		else if (text2 != "RCON")
 		{
-			if (text2 != "0.16.40")
+			if (text2 != MyMod.BuildInfo.Version)
 			{
-				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version 0.16.40");
+				ServerSend.KICKMESSAGE(_fromClient, "Wrong mod version! Server using version " + MyMod.BuildInfo.Version);
 				Shared.SendMessageToChat(new DataStr.MultiplayerChatMessage
 				{
 					m_Type = 0,
@@ -235,6 +235,9 @@ internal class ServerHandle
 			if (MyMod.playersData[_fromClient].m_LevelGuid != text)
 			{
 				MyMod.playersData[_fromClient].m_TicksOnScene = 0;
+				MyMod.playersData[_fromClient].m_WildlifeReadyScene = "";
+				MyMod.playersData[_fromClient].m_PreviousScene = MyMod.playersData[_fromClient].m_LevelGuid;
+				MyMod.playersData[_fromClient].m_SceneChangedAt = Environment.TickCount64;
 				Log("Player " + _fromClient + "  transition to level with GUID " + text);
 			}
 			MyMod.playersData[_fromClient].m_LevelGuid = text;
@@ -1383,9 +1386,12 @@ internal class ServerHandle
 		string scene = packet.ReadString();
 		packet.ReadInt(); // Legacy build index. Wildlife uses the save-scene key.
 		bool ready = packet.ReadBool();
+		long sequence = packet.ReadLong();
 		if (from <= 0 || from >= MyMod.playersData.Count || MyMod.playersData[from] == null) return;
 		var data = MyMod.playersData[from];
-		string readyScene = ready && WildlifeSpawnAuthorityPolicy.WorldScene(scene) ? scene : "";
+		if (!WildlifeSpawnAuthorityPolicy.AcceptSceneReport(data.m_LevelGuid, scene, data.m_WildlifeReadySequence, sequence)) return;
+		data.m_WildlifeReadySequence = sequence;
+		string readyScene = ready ? scene : "";
 		if (data.m_WildlifeReadyScene != readyScene)
 			Log("[Wildlife ready] client=" + from + " ready=" + (readyScene != "") + " scene=" + scene);
 		data.m_WildlifeReadyScene = readyScene;

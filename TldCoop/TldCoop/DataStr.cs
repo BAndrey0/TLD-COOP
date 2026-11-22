@@ -335,6 +335,9 @@ public class DataStr
 
 		public int m_PreviousLevelId;
 		public string m_WildlifeReadyScene = "";
+		public long m_WildlifeReadySequence;
+		public string m_PreviousScene = "";
+		public long m_SceneChangedAt;
 		public string m_WildlifeGrantedScene = "";
 
 		public string m_LevelGuid = "";

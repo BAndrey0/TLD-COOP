@@ -8274,6 +8274,7 @@ public class Pathes
 			MyMod.NoMelonQuit = false;
 			MyMod.QuitWhenSaveOperationFinished = false;
 			MyMod.PendingSaveHashToSend = 0L;
+			CoopReturnToMenu.ResetGuestWait();
 			MyMod.RemovePleaseWait();
 		}
 	}
