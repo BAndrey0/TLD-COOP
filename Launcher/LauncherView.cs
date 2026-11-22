@@ -12,87 +12,271 @@ namespace CoopLauncher;
 
 internal sealed partial class LauncherForm
 {
-	private static readonly Color Ink = Color.FromArgb(16,24,33), Surface = Color.FromArgb(27,38,50), Muted = Color.FromArgb(151,169,182), Accent = Color.FromArgb(136,212,222);
+	private static readonly Color Ink = Color.FromArgb(25, 23, 24);
+	private static readonly Color Surface = Color.FromArgb(39, 34, 35);
+	private static readonly Color Muted = Color.FromArgb(195, 181, 170);
+	private static readonly Color Accent = Color.FromArgb(244, 182, 114);
 	private readonly Label installedValue = new Label(), latestValue = new Label(), contentValue = new Label();
 	private readonly Label sourcePath = new Label();
 	private readonly Panel homeView = new Panel(), settingsView = new Panel(), diagnostics = new Panel();
 	private readonly Button syncButton = new Button(), sourceButton = new Button(), existingButton = new Button();
+	private readonly Button overviewTab = new Button(), settingsTab = new Button(), diagnosticsButton = new Button();
+
 	private void InitializeModernView()
 	{
-		Text="TLD Coop · The Long Dark"; ClientSize=new Size(1020,700); MinimumSize=new Size(960,700);
-		StartPosition=FormStartPosition.CenterScreen; Font=new Font("Segoe UI",10); BackColor=Ink; ForeColor=Color.FromArgb(235,241,244);
-		AutoScaleMode=AutoScaleMode.Dpi; DoubleBuffered=true;
-		var sidebar=new Panel{Dock=DockStyle.Left,Width=194,BackColor=Color.FromArgb(11,18,26),Padding=new Padding(24)};
-		var brand=TextLabel("SKY\nCO-OP",24,FontStyle.Bold,Color.White);brand.SetBounds(24,30,150,88);sidebar.Controls.Add(brand);
-		var edition=TextLabel("THE LONG DARK",8,FontStyle.Bold,Muted);edition.SetBounds(26,126,145,20);sidebar.Controls.Add(edition);
-		var overview=Nav("Обзор",186);overview.Click+=delegate{ShowSection(false);};
-		var settings=Nav("Установка и DLC",232);settings.Click+=delegate{ShowSection(true);};
-		folderButton.Text="Открыть папку";FormatButton(folderButton,false);folderButton.SetBounds(16,278,162,38);sidebar.Controls.Add(folderButton);
-		var github=Nav("GitHub  ↗",324);github.Click+=delegate{Process.Start("https://github.com/"+Repository+"/releases");};
-		var footer=TextLabel("Лаунчер "+LauncherVersion.ToString(3)+"\nНеофициальный кооператив",8.5f,FontStyle.Regular,Muted);footer.Dock=DockStyle.Bottom;footer.Height=50;sidebar.Controls.Add(footer);
-		Controls.Add(sidebar);
-		var area=new Panel{Dock=DockStyle.Fill,Padding=new Padding(30,24,30,18)};Controls.Add(area);area.BringToFront();
-		var heading=new Panel{Dock=DockStyle.Top,Height=56};heading.Controls.Add(TextLabel("Ваше путешествие",20,FontStyle.Bold,ForeColor));
-		checkButton.Text="Проверить обновления";FormatButton(checkButton,false);checkButton.Size=new Size(214,36);checkButton.Dock=DockStyle.Right;heading.Controls.Add(checkButton);area.Controls.Add(heading);
-		var bottom=new Panel{Dock=DockStyle.Bottom,Height=36};var details=new Button{Text="Диагностика",Dock=DockStyle.Left,Width=135};FormatButton(details,false);details.Click+=delegate{diagnostics.Visible=!diagnostics.Visible;};bottom.Controls.Add(details);
-		var channel=TextLabel("Steam · Survival",9,FontStyle.Regular,Muted);channel.Dock=DockStyle.Right;channel.Width=210;channel.TextAlign=ContentAlignment.MiddleRight;bottom.Controls.Add(channel);area.Controls.Add(bottom);
-		diagnostics.Dock=DockStyle.Bottom;diagnostics.Height=160;diagnostics.Visible=false;diagnostics.Padding=new Padding(0,8,0,8);
-		log.Multiline=true;log.ReadOnly=true;log.ScrollBars=ScrollBars.Vertical;log.BackColor=Color.FromArgb(10,17,24);log.ForeColor=Muted;log.BorderStyle=BorderStyle.None;log.Font=new Font("Consolas",9);log.Dock=DockStyle.Fill;diagnostics.Controls.Add(log);area.Controls.Add(diagnostics);
-		homeView.Dock=DockStyle.Fill;settingsView.Dock=DockStyle.Fill;settingsView.Visible=false;area.Controls.Add(homeView);area.Controls.Add(settingsView);homeView.BringToFront();
-		var hero=new LandscapePanel{Dock=DockStyle.Top,Height=216};
-		var heroTitle=TextLabel("Выживать.\nВместе.",32,FontStyle.Bold,Color.White);heroTitle.BackColor=Color.Transparent;heroTitle.SetBounds(24,26,360,104);hero.Controls.Add(heroTitle);
-		var subtitle=TextLabel("Кооперативное выживание на Великом Медведе",10,FontStyle.Regular,Color.FromArgb(188,210,220));subtitle.BackColor=Color.Transparent;subtitle.SetBounds(27,164,430,30);hero.Controls.Add(subtitle);homeView.Controls.Add(hero);
-		var body=new Panel{Dock=DockStyle.Fill,Padding=new Padding(0,22,0,0)};homeView.Controls.Add(body);body.BringToFront();
-		var versions=new TableLayoutPanel{Dock=DockStyle.Top,Height=84,ColumnCount=3,BackColor=Surface};for(int i=0;i<3;i++)versions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,33.333f));
-		VersionCard(versions,0,"УСТАНОВЛЕНО",installedValue);VersionCard(versions,1,"ДОСТУПНО",latestValue);VersionCard(versions,2,"ДОПОЛНЕНИЯ",contentValue);body.Controls.Add(versions);
-		var actions=new Panel{Dock=DockStyle.Bottom,Height=82,Padding=new Padding(0,12,0,10)};
-		playButton.Text="Играть  →";FormatButton(playButton,true);playButton.Dock=DockStyle.Left;playButton.Width=245;playButton.Font=new Font("Segoe UI Semibold",15);
-		installButton.Text="Установить";FormatButton(installButton,false);installButton.Dock=DockStyle.Right;installButton.Width=226;actions.Controls.Add(playButton);actions.Controls.Add(installButton);body.Controls.Add(actions);
-		var statePanel=new Panel{Dock=DockStyle.Fill,Padding=new Padding(0,18,0,0)};body.Controls.Add(statePanel);statePanel.BringToFront();
-		statusLabel.Font=new Font("Segoe UI Semibold",13);statusLabel.Dock=DockStyle.Top;statusLabel.Height=68;
-		pathLabel.Dock=DockStyle.Top;pathLabel.Height=42;pathLabel.ForeColor=Muted;pathLabel.AutoEllipsis=true;statePanel.Controls.Add(pathLabel);statePanel.Controls.Add(statusLabel);
-		progress.Dock=DockStyle.Bottom;progress.Height=5;statePanel.Controls.Add(progress);
-		versionLabel.Visible=false;
+		Text = "TLD-COOP · The Long Dark";
+		ClientSize = new Size(1100, 730);
+		MinimumSize = new Size(900, 680);
+		StartPosition = FormStartPosition.CenterScreen;
+		Font = new Font("Segoe UI", 10);
+		BackColor = Ink;
+		ForeColor = Color.FromArgb(249, 242, 234);
+		AutoScaleMode = AutoScaleMode.Dpi;
+		DoubleBuffered = true;
+
+		var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(28, 4, 28, 16) };
+		shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
+		shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+		shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+		shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+		Controls.Add(shell);
+
+		var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, Margin = Padding.Empty };
+		header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+		header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
+		header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 162));
+		header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+		var wordmark = TextLabel("TLD-COOP", 22, FontStyle.Bold, Accent);
+		wordmark.Dock = DockStyle.Fill;
+		wordmark.TextAlign = ContentAlignment.MiddleLeft;
+		header.Controls.Add(wordmark, 0, 0);
+		overviewTab.Text = "Обзор";
+		settingsTab.Text = "Установка и DLC";
+		overviewTab.Click += delegate { ShowSection(false); };
+		settingsTab.Click += delegate { ShowSection(true); };
+		checkButton.Text = "Проверить обновления";
+		foreach (var button in new[] { overviewTab, settingsTab, checkButton })
+		{
+			FormatButton(button);
+			button.Dock = DockStyle.Fill;
+			button.Margin = new Padding(5, 18, 0, 18);
+		}
+		header.Controls.Add(overviewTab, 1, 0);
+		header.Controls.Add(settingsTab, 2, 0);
+		header.Controls.Add(checkButton, 3, 0);
+		shell.Controls.Add(header, 0, 0);
+
+		var stage = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+		homeView.Dock = settingsView.Dock = DockStyle.Fill;
+		stage.Controls.Add(settingsView);
+		stage.Controls.Add(homeView);
+		shell.Controls.Add(stage, 0, 1);
+		BuildOverview();
 		BuildSettings();
 
-		Button Nav(string text,int y){var button=new Button{Text=text,TextAlign=ContentAlignment.MiddleLeft};FormatButton(button,false);button.SetBounds(16,y,162,38);sidebar.Controls.Add(button);return button;}
+		diagnostics.Dock = DockStyle.Top;
+		diagnostics.Height = 120;
+		diagnostics.Visible = false;
+		log.Multiline = log.ReadOnly = true;
+		log.ScrollBars = ScrollBars.Vertical;
+		log.BackColor = Color.FromArgb(18, 17, 19);
+		log.ForeColor = Muted;
+		log.BorderStyle = BorderStyle.None;
+		log.Font = new Font("Consolas", 9);
+		log.Dock = DockStyle.Fill;
+		diagnostics.Controls.Add(log);
+		shell.Controls.Add(diagnostics, 0, 2);
+
+		var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty, Padding = new Padding(0, 6, 0, 0) };
+		folderButton.Text = "Открыть папку";
+		diagnosticsButton.Text = "Диагностика";
+		diagnosticsButton.Click += delegate
+		{
+			diagnostics.Visible = !diagnostics.Visible;
+			diagnosticsButton.Text = diagnostics.Visible ? "Скрыть журнал" : "Диагностика";
+		};
+		var github = new Button { Text = "Выпуски ↗" };
+		github.Click += delegate { Process.Start("https://github.com/" + Repository + "/releases"); };
+		foreach (var button in new[] { folderButton, diagnosticsButton, github })
+		{
+			FormatButton(button);
+			button.Size = new Size(131, 32);
+			button.Margin = new Padding(0, 0, 8, 0);
+			footer.Controls.Add(button);
+		}
+		var version = TextLabel("Лаунчер " + LauncherVersion.ToString(3), 9, FontStyle.Regular, Muted);
+		version.Size = new Size(140, 32);
+		version.TextAlign = ContentAlignment.MiddleLeft;
+		version.Margin = new Padding(8, 0, 0, 0);
+		footer.Controls.Add(version);
+		shell.Controls.Add(footer, 0, 3);
+		versionLabel.Visible = false;
+		ShowSection(false);
 	}
-	private static Label TextLabel(string text,float size,FontStyle style,Color color) => new Label{Text=text,Font=new Font("Segoe UI",size,style),ForeColor=color,AutoSize=false,Size=new Size(430,40)};
-	private static void FormatButton(Button button,bool primary)
+
+	private void BuildOverview()
 	{
-		button.FlatStyle=FlatStyle.Flat;button.FlatAppearance.BorderSize=primary?0:1;button.FlatAppearance.BorderColor=Color.FromArgb(59,78,94);
-		button.BackColor=primary?Accent:Surface;button.ForeColor=primary?Ink:Color.FromArgb(226,236,241);button.Cursor=Cursors.Hand;button.TabStop=true;
-		button.FlatAppearance.MouseOverBackColor=primary?Color.FromArgb(166,229,235):Color.FromArgb(40,57,72);
+		var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
+		layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+		layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+		layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 102));
+		homeView.Controls.Add(layout);
+
+		var banner = new ShelterPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12) };
+		var title = TextLabel("The Long Dark", 33, FontStyle.Bold, ForeColor);
+		title.BackColor = Color.Transparent;
+		title.SetBounds(28, 22, 440, 64);
+		var description = TextLabel("Кооперативное выживание", 12, FontStyle.Regular, ForeColor);
+		description.BackColor = Color.Transparent;
+		description.SetBounds(31, 89, 400, 28);
+		banner.Controls.Add(title);
+		banner.Controls.Add(description);
+		layout.Controls.Add(banner, 0, 0);
+
+		var cards = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
+		for (int i = 0; i < 3; i++) cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+		VersionCard(cards, 0, "Установлено", installedValue);
+		VersionCard(cards, 1, "Доступно", latestValue);
+		VersionCard(cards, 2, "Дополнения", contentValue);
+		layout.Controls.Add(cards, 0, 1);
+
+		var launch = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, Margin = new Padding(0, 12, 0, 0), Padding = new Padding(14, 5, 12, 5), BackColor = Surface };
+		launch.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+		launch.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+		launch.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+		launch.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+		launch.RowStyles.Add(new RowStyle(SizeType.Absolute, 5));
+		var statePanel = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 2, 12, 0) };
+		statusLabel.Font = new Font("Segoe UI Semibold", 11);
+		statusLabel.Dock = DockStyle.Fill;
+		statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+		pathLabel.Dock = DockStyle.Bottom;
+		pathLabel.Height = 24;
+		pathLabel.ForeColor = Muted;
+		pathLabel.AutoEllipsis = true;
+		statePanel.Controls.Add(statusLabel);
+		statePanel.Controls.Add(pathLabel);
+		launch.Controls.Add(statePanel, 0, 0);
+		installButton.Text = "Установить";
+		FormatButton(installButton);
+		installButton.MinimumSize = new Size(156, 48);
+		installButton.Anchor = AnchorStyles.Right;
+		playButton.Text = "Играть";
+		FormatButton(playButton, primary: true);
+		playButton.Size = new Size(142, 48);
+		playButton.Font = new Font("Segoe UI Semibold", 13);
+		playButton.Anchor = AnchorStyles.Right;
+		launch.Controls.Add(installButton, 1, 0);
+		launch.Controls.Add(playButton, 2, 0);
+		progress.Dock = DockStyle.Fill;
+		progress.Margin = Padding.Empty;
+		launch.Controls.Add(progress, 0, 1);
+		launch.SetColumnSpan(progress, 3);
+		layout.Controls.Add(launch, 0, 2);
 	}
-	private static void VersionCard(TableLayoutPanel table,int column,string title,Label value)
+
+	private static Label TextLabel(string text, float size, FontStyle style, Color color) =>
+		new Label { Text = text, Font = new Font("Segoe UI", size, style), ForeColor = color };
+
+	private static void FormatButton(Button button, bool primary = false)
 	{
-		var panel=new Panel{Dock=DockStyle.Fill,Padding=new Padding(18,12,8,8)};var label=TextLabel(title,8,FontStyle.Bold,Muted);label.Dock=DockStyle.Top;label.Height=23;
-		value.Dock=DockStyle.Fill;value.Font=new Font("Segoe UI Semibold",16);value.AutoEllipsis=true;panel.Controls.Add(value);panel.Controls.Add(label);table.Controls.Add(panel,column,0);
+		button.FlatStyle = FlatStyle.Flat;
+		button.FlatAppearance.BorderSize = primary ? 0 : 1;
+		button.FlatAppearance.BorderColor = Color.FromArgb(89, 72, 64);
+		button.BackColor = primary ? Accent : Surface;
+		button.ForeColor = primary ? Ink : Color.FromArgb(246, 232, 221);
+		button.Cursor = Cursors.Hand;
+		button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(255, 203, 149) : Color.FromArgb(66, 51, 47);
 	}
+
+	private static void VersionCard(TableLayoutPanel table, int column, string title, Label value)
+	{
+		var panel = new Panel { Dock = DockStyle.Fill, BackColor = Surface, Margin = new Padding(0, 0, column == 2 ? 0 : 8, 0), Padding = new Padding(14, 9, 8, 6) };
+		var label = TextLabel(title, 9, FontStyle.Regular, Muted);
+		label.Dock = DockStyle.Top;
+		label.Height = 22;
+		value.Dock = DockStyle.Fill;
+		value.Font = new Font("Segoe UI Semibold", 16);
+		value.AutoEllipsis = true;
+		panel.Controls.Add(value);
+		panel.Controls.Add(label);
+		table.Controls.Add(panel, column, 0);
+	}
+
 	private void BuildSettings()
 	{
-		var title=TextLabel("Игра и дополнения",19,FontStyle.Bold,ForeColor);title.Dock=DockStyle.Top;title.Height=60;settingsView.Controls.Add(title);
-		var content=new FlowLayoutPanel{Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(0,20,0,0),AutoScroll=true};settingsView.Controls.Add(content);content.BringToFront();
-		content.Controls.Add(TextLabel("Оригинальная игра Steam",11,FontStyle.Bold,ForeColor));sourcePath.Size=new Size(650,48);sourcePath.ForeColor=Muted;sourcePath.AutoEllipsis=true;content.Controls.Add(sourcePath);
-		sourceButton.Text="Выбрать папку Steam";sourceButton.Size=new Size(240,38);FormatButton(sourceButton,false);sourceButton.Click+=delegate{var path=AskFolder("Оригинальная игра Steam", "tld.exe");if(path!=null){state.gameDirectory=path;SaveState();RefreshView();}};content.Controls.Add(sourceButton);
-		var spacer=new Panel{Height=22,Width=10};content.Controls.Add(spacer);
-		syncButton.Text="Проверить и добавить DLC";syncButton.Size=new Size(280,40);FormatButton(syncButton,false);syncButton.Click+=async delegate{await SyncContentFromSettings();};content.Controls.Add(syncButton);
-		content.Controls.Add(new Label{Text="После загрузки DLC в Steam лаунчер добавит его в кооперативную копию. Повторная полная установка не нужна.",ForeColor=Muted,Size=new Size(650,58),Padding=new Padding(0,10,0,0)});
-		existingButton.Text="Подключить готовую установку";existingButton.Size=new Size(280,38);FormatButton(existingButton,false);existingButton.Click+=delegate{var path=AskFolder("Готовая папка кооператива (player)","game\\tld.exe");if(path!=null&&IsInstalled(path)){state.installDirectory=path;SaveState();RefreshView();}};content.Controls.Add(existingButton);
-		testBuilds.Text="Получать тестовые версии мода";testBuilds.Size=new Size(420,50);testBuilds.ForeColor=ForeColor;content.Controls.Add(testBuilds);
-		content.Controls.Add(new Label{Text="У всех участников должна быть одна версия мода и необходимые для мира DLC.",ForeColor=Muted,Size=new Size(650,45)});
+		var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoScroll = true, Padding = new Padding(0, 8, 0, 0) };
+		settingsView.Controls.Add(layout);
+		var title = TextLabel("Установка и DLC", 24, FontStyle.Bold, ForeColor);
+		title.Dock = DockStyle.Top;
+		title.Height = 58;
+		layout.Controls.Add(title);
+		AddSettingsCard(layout, "Оригинальная игра Steam", sourcePath, sourceButton, "Выбрать папку Steam", delegate
+		{
+			var path = AskFolder("Оригинальная игра Steam", "tld.exe");
+			if (path != null) { state.gameDirectory = path; SaveState(); RefreshView(); }
+		});
+		AddSettingsCard(layout, "Дополнения", TextLabel("Скопировать установленные в Steam DLC в кооперативную копию.", 10, FontStyle.Regular, Muted),
+			syncButton, "Проверить и добавить DLC", async delegate { await SyncContentFromSettings(); });
+		AddSettingsCard(layout, "Кооперативная копия", TextLabel("Подключить отдельную папку с уже установленным модом.", 10, FontStyle.Regular, Muted),
+			existingButton, "Подключить папку", delegate
+			{
+				var path = AskFolder("Готовая папка кооператива (player)", "game\tld.exe");
+				if (path != null && IsInstalled(path)) { state.installDirectory = path; SaveState(); RefreshView(); }
+			});
+		testBuilds.Text = "Получать тестовые версии мода";
+		testBuilds.Dock = DockStyle.Top;
+		testBuilds.Height = 43;
+		layout.Controls.Add(testBuilds);
 	}
-	private void ShowSection(bool settings){settingsView.Visible=settings;homeView.Visible=!settings;if(settings)settingsView.BringToFront();else homeView.BringToFront();}
-	private void RefreshDashboard(bool installed,Version current,bool update)
+
+	private void AddSettingsCard(TableLayoutPanel layout, string name, Label description, Button button, string action, EventHandler handler)
 	{
-		installedValue.Text=current?.ToString(3)??"Не установлено";latestValue.Text=latest?.Version.ToString(3)??"—";
-		contentValue.Text=installed&&File.Exists(Path.Combine(state.installDirectory,"game","tld_dlc","TFTFT","DLC01.json"))?"TFTFT":"Базовая игра";
-		sourcePath.Text=string.IsNullOrEmpty(state.gameDirectory)?"Игра будет найдена автоматически при установке":state.gameDirectory;
-		syncButton.Enabled=!busy&&installed;sourceButton.Enabled=!busy;existingButton.Enabled=!busy;folderButton.Enabled=!busy;
-		playButton.Text="Играть  →";
-		installButton.Visible=!installed||update;
-		progress.Visible=busy;
+		var card = new TableLayoutPanel { Dock = DockStyle.Top, Height = 96, BackColor = Surface, ColumnCount = 2, RowCount = 2, Padding = new Padding(14, 10, 14, 10), Margin = new Padding(0, 0, 0, 9) };
+		card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+		card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 226));
+		card.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+		card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+		var label = TextLabel(name, 12, FontStyle.Bold, ForeColor);
+		label.Dock = DockStyle.Fill;
+		description.Dock = DockStyle.Fill;
+		description.ForeColor = Muted;
+		description.AutoEllipsis = true;
+		button.Text = action;
+		FormatButton(button);
+		button.Dock = DockStyle.Fill;
+		button.Margin = new Padding(10, 12, 0, 12);
+		button.Click += handler;
+		card.Controls.Add(label, 0, 0);
+		card.Controls.Add(description, 0, 1);
+		card.Controls.Add(button, 1, 0);
+		card.SetRowSpan(button, 2);
+		layout.Controls.Add(card);
 	}
+
+	private void ShowSection(bool settings)
+	{
+		settingsView.Visible = settings;
+		homeView.Visible = !settings;
+		overviewTab.ForeColor = settings ? ForeColor : Accent;
+		settingsTab.ForeColor = settings ? Accent : ForeColor;
+		overviewTab.AccessibleDescription = settings ? "" : "Текущий раздел";
+		settingsTab.AccessibleDescription = settings ? "Текущий раздел" : "";
+	}
+
+	private void RefreshDashboard(bool installed, Version current, bool update)
+	{
+		installedValue.Text = current?.ToString(3) ?? (installed ? "Неизвестно" : "Нет");
+		latestValue.Text = latest?.Version.ToString(3) ?? "—";
+		contentValue.Text = installed && File.Exists(Path.Combine(state.installDirectory, "game", "tld_dlc", "TFTFT", "DLC01.json")) ? "TFTFT" : installed ? "Базовая игра" : "—";
+		sourcePath.Text = string.IsNullOrEmpty(state.gameDirectory) ? "Папка определяется при установке" : state.gameDirectory;
+		syncButton.Enabled = !busy && installed;
+		sourceButton.Enabled = existingButton.Enabled = folderButton.Enabled = !busy;
+		playButton.Visible = installed;
+		installButton.Visible = !installed || update;
+		progress.Visible = busy;
+	}
+
 	private async System.Threading.Tasks.Task SyncContentFromSettings()
 	{
 		if(busy||GameRunning())return;SetBusy(true,"Проверяю дополнения Steam…");
@@ -128,18 +312,33 @@ internal sealed partial class LauncherForm
 	}
 }
 
-internal sealed class LandscapePanel : Panel
+internal sealed class ShelterPanel : Panel
 {
-	public LandscapePanel(){DoubleBuffered=true;}
-	protected override void OnPaint(PaintEventArgs e)
+	private static readonly Image Art = LoadArtwork();
+
+	internal ShelterPanel() { DoubleBuffered = true; }
+
+	private static Image LoadArtwork()
 	{
-		base.OnPaint(e);var g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;
-		using(var sky=new LinearGradientBrush(ClientRectangle,Color.FromArgb(39,76,94),Color.FromArgb(17,36,49),90))g.FillRectangle(sky,ClientRectangle);
-		float w=Width,h=Height;
-		using(var moon=new SolidBrush(Color.FromArgb(188,218,222)))g.FillEllipse(moon,w-113,28,35,35);
-		using(var back=new SolidBrush(Color.FromArgb(61,95,111)))g.FillPolygon(back,new[]{new PointF(w*.43f,h),new PointF(w*.7f,40),new PointF(w*.83f,140),new PointF(w*.91f,72),new PointF(w,h*.7f),new PointF(w,h)});
-		using(var snow=new SolidBrush(Color.FromArgb(144,179,187)))g.FillPolygon(snow,new[]{new PointF(w*.7f,40),new PointF(w*.64f,88),new PointF(w*.7f,77),new PointF(w*.72f,90),new PointF(w*.74f,72)});
-		using(var front=new SolidBrush(Color.FromArgb(21,47,61)))g.FillPolygon(front,new[]{new PointF(w*.45f,h),new PointF(w*.76f,112),new PointF(w*.85f,165),new PointF(w,116),new PointF(w,h)});
-		using(var tree=new SolidBrush(Color.FromArgb(13,32,43)))for(int i=0;i<7;i++){float x=w*.6f+i*42,y=h-12-i%3*8;g.FillPolygon(tree,new[]{new PointF(x,y-37-i%2*13),new PointF(x-13,y),new PointF(x+13,y)});}
+		using var stream = typeof(ShelterPanel).Assembly.GetManifestResourceStream("CoopLauncher.Shelter.jpg");
+		if (stream == null) return null;
+		using var image = Image.FromStream(stream);
+		return new Bitmap(image);
+	}
+
+	protected override void OnPaintBackground(PaintEventArgs e)
+	{
+		var bounds = ClientRectangle;
+		if (bounds.Width < 1 || bounds.Height < 1) return;
+		if (Art != null)
+		{
+			float scale = Math.Max((float)bounds.Width / Art.Width, (float)bounds.Height / Art.Height);
+			float width = Art.Width * scale, height = Art.Height * scale;
+			e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+			e.Graphics.DrawImage(Art, bounds.Width - width, (bounds.Height - height) / 2, width, height);
+		}
+		else e.Graphics.Clear(Color.FromArgb(59, 43, 40));
+		using var shade = new LinearGradientBrush(bounds, Color.FromArgb(228, 22, 19, 22), Color.FromArgb(8, 22, 19, 22), LinearGradientMode.Horizontal);
+		e.Graphics.FillRectangle(shade, bounds);
 	}
 }
