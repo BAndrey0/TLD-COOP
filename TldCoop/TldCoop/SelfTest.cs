@@ -21,6 +21,7 @@ public static class SelfTest
 	private static bool nativePreviewCreated;
 	private static bool nativeAssetsProbed;
 	private static float balanceSampleAt=-1, balanceFatigue;
+	private static bool CookingTest => Environment.GetEnvironmentVariable("TLD_COOP_COOKING_PROBE") == "1";
 	private static bool ModelOnly => Environment.GetEnvironmentVariable("TLD_COOP_MODEL_ONLY_TEST")=="1";
 	private static Vector3 previewTarget;
 	private static bool previewTargetSet;
@@ -593,11 +594,28 @@ public static class SelfTest
 	public static void Tick()
 	{
 		if (Environment.GetEnvironmentVariable("TLD_COOP_INTERACTION_PROBE") == "1") return;
-		if ((ModelOnly || FurnitureCrashTest || DropMoveTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started &&
+		if ((ModelOnly || CookingTest || FurnitureCrashTest || DropMoveTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started &&
 			GameCompat.Panel<Panel_Boot>() is { } boot)
 		{
 			boot.m_HoldLoadingUntilInputGiven = false;
 			if (boot.m_SceneLoaded && boot.isActiveAndEnabled) boot._ReadyToActivateScene_k__BackingField = true;
+		}
+		if (CookingTest)
+		{
+			Application.runInBackground = true;
+			if (started && GearCatalogIndex.InWorld && !furnitureTestFinished && GameManager.GetInventoryComponent() != null)
+			{
+				if (furnitureReadyAt == 0f) furnitureReadyAt = Time.realtimeSinceStartup + 2f;
+				if (Time.realtimeSinceStartup >= furnitureReadyAt)
+				{
+					furnitureTestFinished = true;
+					bool host = MyMod.iAmHost;
+					MyMod.iAmHost = true;
+					try { ScenePlacementSync.ProbeCookingAndBooks(); }
+					catch (Exception ex) { MelonLogger.Error("[Cooking QA] FAIL " + ex); }
+					finally { MyMod.iAmHost = host; Application.Quit(); }
+				}
+			}
 		}
 		if (FurnitureCrashTest)
 		{
@@ -701,7 +719,7 @@ public static class SelfTest
 			}
 		}
 		CheckAvatarInWorld();
-		if ((FurnitureCrashTest || DropMoveTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started)
+		if ((CookingTest || FurnitureCrashTest || DropMoveTest || !string.IsNullOrEmpty(AvatarWorldOutput)) && !started)
 		{
 			MoviePlayer.m_HasIntroPlayedForMainMenu = true;
 			if (GameCompat.Panel<Panel_MainMenu>() is { } menu) menu.m_PlayedIntroMovie = true;
@@ -741,7 +759,7 @@ public static class SelfTest
 			SaveSlotInfo info = slots[i];
 			if (info.m_SaveSlotName == slot || info.m_UserDefinedName == slot)
 			{
-				MyMod.AutoHostWhenLoaded = !ModelOnly && string.IsNullOrEmpty(AvatarWorldOutput);
+				MyMod.AutoHostWhenLoaded = !ModelOnly && !CookingTest && string.IsNullOrEmpty(AvatarWorldOutput);
 				MelonLogger.Msg("[SelfTest] Loading " + info.m_SaveSlotName + (MyMod.AutoHostWhenLoaded ? " and hosting after load" : " for an offline check"));
 				SaveGameSlots.SetBaseNameForSave(info.m_SaveSlotName, info.m_SaveSlotName);
 				SaveGameSystem.SetCurrentSaveInfo(info.m_Episode, info.m_GameMode, info.m_GameId, info.m_SaveSlotName);

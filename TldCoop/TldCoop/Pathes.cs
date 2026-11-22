@@ -1462,9 +1462,31 @@ public class Pathes
 		}
 	}
 
+	[HarmonyPatch(typeof(Panel_Inventory_Examine), nameof(Panel_Inventory_Examine.SetGearItem))]
+	private static class PersonalBookOnExamine
+	{
+		private static void Prefix(GearItem __0)
+		{
+			if (MyMod.InOnline()) MyMod.PatchBookReadTime(__0, personal: true);
+		}
+	}
+
+	[HarmonyPatch(typeof(GearItem), nameof(GearItem.Deserialize), new[] { typeof(GearItemSaveDataProxy), typeof(bool) })]
+	private static class PersonalBookOnRestore
+	{
+		private static void Postfix(GearItem __instance)
+		{
+			if (MyMod.InOnline()) MyMod.PatchBookReadTime(__instance, personal: true);
+		}
+	}
+
 	[HarmonyPatch(typeof(ResearchItem), "Read")]
 	private static class ResearchItem_Read
 	{
+		private static void Prefix(ResearchItem __instance)
+		{
+			if (MyMod.InOnline()) MyMod.PatchBookReadTime(__instance.GetComponent<GearItem>(), personal: true);
+		}
 		internal static void Postfix(ResearchItem __instance, float timeOfDayHours)
 		{
 			if (MyMod.CrazyPatchesLogger)
@@ -1482,11 +1504,8 @@ public class Pathes
 			{
 				string text = component.m_ObjectGuid.Get();
 				MelonLogger.Msg("Have read book " + component.GetGearName() + " GUID " + text + " Progress " + __instance.m_ElapsedHours + "/" + __instance.m_TimeRequirementHours);
-				if (MyMod.BooksResearched.ContainsKey(text))
-				{
-					MyMod.BooksResearched.Remove(text);
-				}
-				MyMod.BooksResearched.Add(text, __instance.m_ElapsedHours);
+				if (!string.IsNullOrEmpty(text) && float.IsFinite(__instance.m_ElapsedHours))
+					MyMod.BooksResearched[text] = __instance.m_ElapsedHours;
 			}
 		}
 	}
@@ -7632,27 +7651,9 @@ public class Pathes
 	public static void LoadReadedBooks(string name)
 	{
 		string text = SaveSlotCompat.LoadDataFromSlot(name, "tldcoop_books");
-		if (text == null)
-		{
-			return;
-		}
-		System.Collections.Generic.Dictionary<string, float> dictionary = JSON.Load(text).Make<System.Collections.Generic.Dictionary<string, float>>();
-		int num = 0;
-		int num2 = 0;
-		foreach (System.Collections.Generic.KeyValuePair<string, float> item in dictionary)
-		{
-			if (!MyMod.BooksResearched.ContainsKey(item.Key))
-			{
-				MyMod.BooksResearched.Add(item.Key, item.Value);
-				num++;
-			}
-			else
-			{
-				MyMod.BooksResearched.Remove(item.Key);
-				MyMod.BooksResearched.Add(item.Key, item.Value);
-				num2++;
-			}
-		}
+		MyMod.BooksResearched = text == null
+			? new System.Collections.Generic.Dictionary<string, float>()
+			: JSON.Load(text).Make<System.Collections.Generic.Dictionary<string, float>>();
 	}
 
 	public static void LoadCustomSkills(string name)

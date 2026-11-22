@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.41";
+		public const string Version = "0.16.42";
 
 		public const string DownloadLink = null;
 
@@ -1047,23 +1047,21 @@ public class MyMod : MelonMod
 		}
 	}
 
-	public static void PatchBookReadTime(GearItem __instance)
+	public static void PatchBookReadTime(GearItem item, bool personal = false)
 	{
-		if (__instance.m_ResearchItem == null)
+		if (item == null || item.m_ResearchItem == null) return;
+		if (item.m_ObjectGuid == null)
+			item.m_ObjectGuid = item.GetComponent<ObjectGuid>() ?? item.gameObject.AddComponent<ObjectGuid>();
+		string id = item.m_ObjectGuid.Get();
+		if (string.IsNullOrEmpty(id))
 		{
-			return;
+			id = ObjectGuidManager.GenerateNewGuidString();
+			item.m_ObjectGuid.Set(id);
 		}
-		if (__instance.m_ObjectGuid == null)
-		{
-			__instance.m_ObjectGuid = __instance.gameObject.AddComponent<ObjectGuid>();
-			__instance.m_ObjectGuid.MaybeRuntimeRegister();
-			return;
-		}
-		string key = __instance.m_ObjectGuid.Get();
-		if (BooksResearched.TryGetValue(key, out var hours) && float.IsFinite(hours))
-		{
-			__instance.m_ResearchItem.m_ElapsedHours = MathF.Max(__instance.m_ResearchItem.m_ElapsedHours, hours);
-		}
+		if (BooksResearched.TryGetValue(id, out float hours) && float.IsFinite(hours))
+			item.m_ResearchItem.m_ElapsedHours = personal ? hours : MathF.Max(item.m_ResearchItem.m_ElapsedHours, hours);
+		else if (personal)
+			item.m_ResearchItem.m_ElapsedHours = 0f;
 	}
 
 	public static void AddSlicedJsonDataForPicker(DataStr.SlicedJsonData jData, bool place)
