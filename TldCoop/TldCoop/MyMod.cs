@@ -1182,6 +1182,7 @@ public class MyMod : MelonMod
 		else
 		{
 			component.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
+			component.m_LastUpdatedTODHours = GameManager.GetTimeOfDayComponent().GetHoursPlayedNotPaused();
 			component.m_MarkedForNextUpdateDestroy = false;
 			ThrownFlareSync.ApplyPickupBurn(component, extra);
 			if (!GearPlacementSync.Start(GameManager.GetPlayerManagerComponent(), gameObject, jData.m_Hash)) return;
@@ -2841,6 +2842,9 @@ public class MyMod : MelonMod
 
 	public static void SpawnSnowShelterByOther(DataStr.ShowShelterByOther shelterData)
 	{
+		if (shelterData == null || string.IsNullOrEmpty(shelterData.m_LevelGUID) ||
+			shelterData.m_LevelGUID != level_guid || DedicatedServerAppMode)
+			return;
 		for (int i = 0; i < SpawnedByOtherShelters.Count; i++)
 		{
 			GameObject gameObject = SpawnedByOtherShelters[i];
@@ -2849,12 +2853,22 @@ public class MyMod : MelonMod
 				return;
 			}
 		}
-		GameObject gameObject2 = UnityEngine.Object.Instantiate(GameManager.GetSnowShelterManager().m_SnowShelterPrefab.gameObject);
-		gameObject2.name = GameManager.GetSnowShelterManager().m_SnowShelterPrefab.name;
-		gameObject2.transform.position = shelterData.m_Position;
-		gameObject2.transform.rotation = shelterData.m_Rotation;
-		gameObject2.AddComponent<Comps.DoNotSerializeThis>();
-		SpawnedByOtherShelters.Add(gameObject2);
+		var shelters = SnowShelterManager.m_SnowShelters;
+		if (shelters != null)
+			foreach (var shelter in shelters)
+				if (shelter != null && shelter.transform.position == shelterData.m_Position) return;
+
+		var prefab = GameManager.GetSnowShelterManager()?.GetOrLoadSnowShelterPrefab();
+		if (prefab == null) return;
+		var replica = UnityEngine.Object.Instantiate(prefab, shelterData.m_Position, shelterData.m_Rotation);
+		replica.name = prefab.name;
+		replica.gameObject.AddComponent<Comps.DoNotSerializeThis>();
+		replica.m_CurrentHP = replica.m_MaxHP;
+		replica.m_Ruined = false;
+		replica.m_NormalMesh?.SetActive(true);
+		replica.m_RuinedMesh?.SetActive(false);
+		replica.gameObject.SetActive(true);
+		SpawnedByOtherShelters.Add(replica.gameObject);
 	}
 
 	public static void RemoveSnowShelterByOther(DataStr.ShowShelterByOther shelterData)
@@ -2869,12 +2883,14 @@ public class MyMod : MelonMod
 				return;
 			}
 		}
-		for (int j = 0; j < SnowShelterManager.m_SnowShelters.Count; j++)
+		var shelters = SnowShelterManager.m_SnowShelters;
+		if (shelters == null) return;
+		for (int j = 0; j < shelters.Count; j++)
 		{
-			GameObject gameObject2 = SnowShelterManager.m_SnowShelters[j].gameObject;
+			GameObject gameObject2 = shelters[j]?.gameObject;
 			if (gameObject2 != null && gameObject2.transform.position == shelterData.m_Position)
 			{
-				SnowShelterManager.m_SnowShelters.RemoveAt(j);
+				shelters.RemoveAt(j);
 				UnityEngine.Object.Destroy(gameObject2);
 				break;
 			}
@@ -7030,20 +7046,18 @@ public class MyMod : MelonMod
 		bool food = gear.m_FoodItem != null;
 		float now = GameManager.GetTimeOfDayComponent().GetHoursPlayedNotPaused();
 		int elapsed = food && extra != null ? System.Math.Max(0, MinutesFromStartServer - extra.m_DroppedTime) : 0;
-		gear.m_LastUpdatedTODHours = flare || food ? now : 0f;
-		if (food) gear.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
+		// This is a reconstructed inventory item. Zero would charge the entire
+		// length of the current save again when native condition and weather run.
+		gear.m_LastUpdatedTODHours = now;
+		gear.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
 		gear.ManualStart();
 		if (flare)
 			ThrownFlareSync.ApplyPickupBurn(gear, extra);
-		else
+		else if (food)
 		{
-			if (food)
-			{
-				RestoreDroppedFood(gear, extra);
-				gear.m_LastUpdatedTODHours = now - elapsed / 60f;
-				if (elapsed == 0) return;
-			}
-			gear.ManualUpdate();
+			RestoreDroppedFood(gear, extra);
+			gear.m_LastUpdatedTODHours = now - elapsed / 60f;
+			if (elapsed > 0) gear.ManualUpdate();
 		}
 	}
 

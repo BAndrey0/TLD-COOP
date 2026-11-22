@@ -696,7 +696,8 @@ public class DataStr
 			{
 				return false;
 			}
-			if (m_LevelID == other.m_LevelID && m_LevelGUID == other.m_LevelGUID && m_Position == other.m_Position)
+			if (m_LevelGUID == other.m_LevelGUID && m_Position == other.m_Position &&
+				(!string.IsNullOrEmpty(m_LevelGUID) || m_LevelID == other.m_LevelID))
 			{
 				return true;
 			}

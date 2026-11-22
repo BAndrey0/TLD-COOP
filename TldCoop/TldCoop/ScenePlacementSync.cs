@@ -1426,9 +1426,7 @@ internal static class ScenePlacementSync
             var source = cancelRaw ? raw : pot.GetGearItemForInspectMode() ?? raw;
             if (source == null || source == pot.m_GearItem) return;
             var output = UnityEngine.Object.Instantiate(source.gameObject, point.transform.position, source.transform.rotation).GetComponent<GearItem>();
-            if (cookingState == CookingPotItem.CookingState.Ready && output.m_FoodItem != null &&
-                (hot || output.m_FoodItem.m_HeatedWhenCooked) && output.m_FoodItem.m_HeatPercent <= 0f)
-                pot.SetHeatPercentWhenCooked(output.m_FoodItem);
+            CopyCookingHeat(pot, raw, output, cookingState, hot);
             if (cancelRaw && !pot.IsDummyPot()) pot.DestroyGearItemBeingCooked();
             else pot.PickUpCookedGearItem(addToInventory: false);
             if ((pot != null && pot.m_GearItemBeingCooked == raw) || (source != null && source.m_InPlayerInventory))
@@ -1456,6 +1454,23 @@ internal static class ScenePlacementSync
             PublishPot(key, null);
             TransferCookingOutput(gear, point, requester);
         }
+    }
+
+    private static void CopyCookingHeat(CookingPotItem pot, GearItem raw, GearItem output,
+        CookingPotItem.CookingState cookingState, bool hot)
+    {
+        var food = output.m_FoodItem;
+        if (food == null) return;
+        // Reheating can use the same gear on the fire but a fresh copy for inspection.
+        bool sameFood = raw.GetGearName() == output.GetGearName();
+        if (sameFood && raw.m_FoodItem is { } heated)
+        {
+            food.m_HeatPercent = heated.m_HeatPercent;
+            food.m_NumTimesHeatedUp = Math.Max(food.m_NumTimesHeatedUp, heated.m_NumTimesHeatedUp);
+        }
+        if (cookingState == CookingPotItem.CookingState.Ready && food.m_HeatPercent <= 0f &&
+            (hot || !sameFood && food.m_HeatedWhenCooked))
+            pot.SetHeatPercentWhenCooked(food);
     }
 
     private static void TransferCookingOutput(GearItem gear, GearPlacePoint point, int requester)
@@ -1498,6 +1513,7 @@ internal static class ScenePlacementSync
             var gear = UnityEngine.Object.Instantiate(prefab, player.transform.position, Quaternion.identity).GetComponent<GearItem>();
             gear.DeserializeFromJson(transfer.Json);
             gear.m_LastUpdatedTODHours = GameManager.GetTimeOfDayComponent().GetHoursPlayedNotPaused();
+            gear.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
             gear.ManualStart();
             RestoreFoodHeat(gear, transfer);
             if (!player.ProcessPickupItemInteractionCompat(gear)) MyMod.SendDropItem(gear, cookingOutput: true);
@@ -1561,7 +1577,11 @@ internal static class ScenePlacementSync
         RemotePots.TryGetValue(identity, out var previous);
         if (pot == null)
         {
-            if (previous?.Visual != null) UnityEngine.Object.Destroy(previous.Visual);
+            if (previous?.Visual != null)
+            {
+                previous.Visual.SetActive(false);
+                UnityEngine.Object.Destroy(previous.Visual);
+            }
             RemotePots.Remove(identity);
             return;
         }
@@ -1571,6 +1591,7 @@ internal static class ScenePlacementSync
         var hitboxes = previous?.Hitboxes;
         if (previous != null && (previous.State.Gear != pot.Gear || previous.State.Food != pot.Food || previous.State.Meshes != pot.Meshes || previous.State.Liquid != pot.Liquid) && visual != null)
         {
+            visual.SetActive(false);
             UnityEngine.Object.Destroy(visual);
             visual = null;
         }
@@ -1624,15 +1645,13 @@ internal static class ScenePlacementSync
             }
             else if (useFood || visible.Count == 0)
             {
-                if (!renderer.enabled || !renderer.gameObject.activeSelf || (cooking != null && renderer == cooking.m_GrubMeshRenderer)) continue;
+                if (!renderer.enabled || !ActiveBelow(renderer.transform, prefab.transform) ||
+                    (cooking != null && renderer == cooking.m_GrubMeshRenderer)) continue;
             }
             else if (!visible.Contains(PotMeshKey(renderer, prefab.transform))) continue;
             if (sourceMesh == null) continue;
             var mesh = new GameObject(renderer.name);
-            mesh.transform.SetParent(root.transform, false);
-            mesh.transform.localPosition = prefab.transform.InverseTransformPoint(renderer.transform.position);
-            mesh.transform.localRotation = Quaternion.Inverse(prefab.transform.rotation) * renderer.transform.rotation;
-            mesh.transform.localScale = renderer.transform.lossyScale;
+            CopyCookwareTransform(renderer.transform, prefab.transform, mesh.transform, root.transform);
             mesh.AddComponent<MeshFilter>().sharedMesh = sourceMesh;
             mesh.AddComponent<MeshRenderer>().sharedMaterials = materials;
             var bounds = sourceMesh.bounds;
@@ -1661,10 +1680,7 @@ internal static class ScenePlacementSync
         {
             if (!source.enabled || !ActiveBelow(source.transform, prefab.transform)) continue;
             var child = new GameObject(source.name) { layer = source.gameObject.layer };
-            child.transform.SetParent(replica.transform, false);
-            child.transform.localPosition = prefab.transform.InverseTransformPoint(source.transform.position);
-            child.transform.localRotation = Quaternion.Inverse(prefab.transform.rotation) * source.transform.rotation;
-            child.transform.localScale = source.transform.lossyScale;
+            CopyCookwareTransform(source.transform, prefab.transform, child.transform, replica.transform);
             Collider hitbox;
             if (source.TryCast<BoxCollider>() is { } box)
             {
@@ -1705,6 +1721,15 @@ internal static class ScenePlacementSync
             copied = true;
         }
         return copied;
+    }
+
+    private static void CopyCookwareTransform(Transform source, Transform prefab, Transform target, Transform replica)
+    {
+        var inverseRotation = Quaternion.Inverse(prefab.rotation);
+        target.SetParent(replica, false);
+        target.localPosition = inverseRotation * (source.position - prefab.position);
+        target.localRotation = inverseRotation * source.rotation;
+        target.localScale = source.lossyScale;
     }
 
     internal static GameObject CookwareReplicaRoot(GameObject target)

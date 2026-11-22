@@ -866,10 +866,7 @@ public class ClientHandle
 		for (int i = 1; i <= num; i++)
 		{
 			DataStr.ShowShelterByOther showShelterByOther = _packet.ReadShelter();
-			if (!MyMod.ShowSheltersBuilded.Contains(showShelterByOther))
-			{
-				Shared.ShelterCreated(showShelterByOther.m_Position, showShelterByOther.m_Rotation, showShelterByOther.m_LevelID, showShelterByOther.m_LevelGUID, needSync: false);
-			}
+			Shared.ShelterCreated(showShelterByOther.m_Position, showShelterByOther.m_Rotation, showShelterByOther.m_LevelID, showShelterByOther.m_LevelGUID, needSync: false);
 		}
 	}
 

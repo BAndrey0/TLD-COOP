@@ -16,6 +16,7 @@ internal static class SceneRepairSync
     private static readonly Dictionary<int, string> LocalIds = new();
     private static readonly Dictionary<string, BrokenDecorationInteraction> Decorations = new(StringComparer.Ordinal);
     private static readonly Dictionary<int, string> DecorationIds = new();
+    private static readonly Dictionary<string, Elevator> Elevators = new(StringComparer.Ordinal);
     private static readonly HashSet<string> Received = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, HashSet<string>> Saved = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, HashSet<string>> Pending = new(StringComparer.Ordinal);
@@ -40,6 +41,8 @@ internal static class SceneRepairSync
         Local.Clear();
         LocalIds.Clear();
         Decorations.Clear();
+        DecorationIds.Clear();
+        Elevators.Clear();
         Received.Clear();
         if (area == null) return;
         UpdateWorld();
@@ -61,6 +64,12 @@ internal static class SceneRepairSync
             if (repaired == null) continue;
             if (repaired.Contains(id)) Receive(area, id);
             else if (item.m_State == BrokenDecorationState.Repaired) changed |= repaired.Add(id);
+        }
+        foreach (var elevator in UnityEngine.Object.FindObjectsOfType<Elevator>(true))
+        {
+            if (elevator == null || !elevator.gameObject.scene.IsValid()) continue;
+            string id = RegisterElevator(elevator);
+            if (repaired?.Contains(id) == true) Receive(area, id);
         }
         if (changed) Save(area, repaired);
     }
@@ -99,6 +108,24 @@ internal static class SceneRepairSync
             DecorationIds[instance] = id = TransformId("decoration-repair-", item.transform);
         Decorations[id] = item;
         return id;
+    }
+
+    private static string RegisterElevator(Elevator elevator)
+    {
+        string guid = elevator.GetComponent<ObjectGuid>()?.Get();
+        string id = string.IsNullOrEmpty(guid) ? PathId(elevator.transform) : guid;
+        id = "elevator-crank-" + id;
+        Elevators[id] = elevator;
+        return id;
+    }
+
+    private static string PathId(Transform transform)
+    {
+        // The cabin moves. Its position cannot identify the scene elevator.
+        string path = "";
+        for (var part = transform; part != null; part = part.parent)
+            path = part.name + "/" + path;
+        return Shared.StableHash(path).ToString("X8", CultureInfo.InvariantCulture);
     }
 
     private static bool Valid(string id) => !string.IsNullOrEmpty(id) && id.Length <= 120;
@@ -149,6 +176,11 @@ internal static class SceneRepairSync
         if (Pending.TryGetValue(area, out var repairs)) repairs.Remove(id);
         if (area != scene || !Valid(id)) return;
         Received.Add(id);
+        if (Elevators.TryGetValue(id, out var elevator) && elevator != null)
+        {
+            ApplyElevatorCrank(elevator);
+            return;
+        }
         if (Decorations.TryGetValue(id, out var decoration) && decoration != null)
         {
             if (decoration.m_State != BrokenDecorationState.Repaired)
@@ -161,6 +193,32 @@ internal static class SceneRepairSync
         if (item.m_FixedGameobject != null) item.m_FixedGameobject.SetActive(true);
         if (item.m_BrokenGameobject != null) item.m_BrokenGameobject.SetActive(false);
         item.UpdateText();
+    }
+
+    private static void ApplyElevatorCrank(Elevator elevator)
+    {
+        if (elevator.m_State != Elevator.State.WaitingForPlayer) return;
+        elevator.m_ElevatorHasCrank = true;
+        elevator.m_CrankObject?.SetActive(true);
+    }
+
+    [HarmonyPatch(typeof(Elevator), nameof(Elevator.PerformInteraction))]
+    private static class ElevatorEntered
+    {
+        private static void Prefix(Elevator __instance, out string __state)
+        {
+            __state = null;
+            if (scene == null || scene != MyMod.level_guid || !MyMod.InOnline() ||
+                __instance.m_State != Elevator.State.WaitingForPlayer) return;
+            string id = RegisterElevator(__instance);
+            if (Received.Contains(id)) ApplyElevatorCrank(__instance);
+            if (!__instance.m_ElevatorHasCrank) __state = id;
+        }
+
+        private static void Postfix(Elevator __instance, string __state)
+        {
+            if (__state != null && __instance.m_State == Elevator.State.Entering) Publish(__state);
+        }
     }
 
     private static void Publish(string id)

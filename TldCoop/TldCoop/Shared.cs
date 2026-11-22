@@ -1993,7 +1993,7 @@ public class Shared
 				ServerSend.ADDSHELTER(0, showShelterByOther, toEveryOne: true);
 			}
 		}
-		else if (lvl == MyMod.levelid && lvlguid == MyMod.level_guid)
+		else if (lvlguid == MyMod.level_guid)
 		{
 			MyMod.SpawnSnowShelterByOther(showShelterByOther);
 		}
@@ -2011,6 +2011,8 @@ public class Shared
 		}
 		if (!needSync)
 		{
+			if (lvlguid == MyMod.level_guid && !MyMod.DedicatedServerAppMode)
+				MyMod.RemoveSnowShelterByOther(showShelterByOther);
 			return;
 		}
 		if (MyMod.sendMyPosition)
