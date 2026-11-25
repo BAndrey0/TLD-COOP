@@ -18,6 +18,8 @@ public class ClientHandle
 			weatherRevisions.Clear();
 			syncedWeatherScene = null;
 			syncedWeatherUntil = 0f;
+			FarTerritory.TraderSync.ResetSession();
+			FarTerritory.CougarSync.ResetSession();
 		}
 		MyMod.RemovePleaseWait();
 		MyMod.DiscardRepeatPacket();
@@ -1373,18 +1375,21 @@ public class ClientHandle
     private static string syncedWeatherScene;
     private static float syncedWeatherUntil;
     private static readonly System.Collections.Generic.Dictionary<int, long> weatherRevisions = new();
-    internal static bool HasCurrentWeatherSync => !MyMod.iAmHost && MyMod.InOnline() && syncedWeatherScene == MyMod.level_guid &&
+    internal static bool HasCurrentWeatherSync => !MyMod.iAmHost && MyMod.InOnline() && !MyMod.LoadingScreenIsOn && syncedWeatherScene == MyMod.level_guid &&
         Time.realtimeSinceStartup < syncedWeatherUntil;
 
     public static void DoWeatherSync(float start, int seed, float duration, WeatherStage type, int index,
         System.Collections.Generic.List<float> durations, System.Collections.Generic.List<float> transitions,
         int tod, float high, float low, int previousStage, string setName, int activeStage, float stageElapsed)
     {
-        if (MyMod.LoadingScreenIsOn || !WildlifeSpawnAuthorityPolicy.WorldScene(MyMod.level_name) ||
-            !float.IsFinite(start) || !float.IsFinite(duration) || duration <= 0) return;
+        syncedWeatherUntil = 0f;
+        if (MyMod.LoadingScreenIsOn || !float.IsFinite(start) || start < 0f || start >= 1f ||
+            !float.IsFinite(duration) || duration <= 0f) return;
         var weather = GameManager.m_Weather;
-        var transition = GameManager.m_WeatherTransition;
-        if (weather == null || transition == null || transition.m_CurrentWeatherSet == null) return;
+        var weatherTransition = GameManager.m_WeatherTransition;
+        var current = weatherTransition?.m_CurrentWeatherSet;
+        var sky = GameManager.GetUniStorm();
+        if (weather == null || current == null || sky == null || weather.IsWeatherStatic()) return;
         var sets = weather.m_WeatherSetsForScene;
         if (sets == null || string.IsNullOrEmpty(setName)) return;
         WeatherSetData selected = null;
@@ -1397,45 +1402,61 @@ public class ClientHandle
                 break;
             }
         }
-        var current = transition.m_CurrentWeatherSet;
+        bool registeredForScene = selected != null;
         if (current.name == setName && current.m_CharacterizingType == type) selected = current;
         if (selected == null)
         {
             var candidate = weather.GetWeatherSetByName(setName);
             if (candidate != null && candidate.m_CharacterizingType == type) selected = candidate;
         }
-        if (selected == null || selected.m_WeatherStages == null || selected.m_WeatherStages.Length == 0)
+        var stages = selected?.m_WeatherStages;
+        if (stages == null || stages.Length == 0 || durations.Count != stages.Length || transitions.Count != stages.Length) return;
+
+        bool hasFogStage = false;
+        float totalDuration = 0f;
+        for (int i = 0; i < stages.Length; i++)
         {
-            syncedWeatherUntil = 0;
-            return;
+            if (stages[i] == null || !float.IsFinite(durations[i]) || durations[i] < 0f ||
+                !float.IsFinite(transitions[i]) || transitions[i] < 0f) return;
+            hasFogStage |= stages[i].m_WeatherType == WeatherStage.ElectrostaticFog;
+            totalDuration += durations[i];
         }
-        selected.m_CurrentSetDuration = duration;
-        for (int i = 0; i < selected.m_WeatherStages.Length && i < durations.Count && i < transitions.Count; i++)
+        if (!float.IsFinite(totalDuration) || Mathf.Abs(totalDuration - duration) > .001f ||
+            (hasFogStage && !registeredForScene)) return;
+
+        float elapsed = start * duration;
+        int stage = activeStage;
+        if (stage == -1)
         {
-            selected.m_WeatherStages[i].m_CurrentDuration = durations[i];
-            selected.m_WeatherStages[i].m_CurrentTransitionTime = transitions[i];
+            stage = 0;
+            while (stage + 1 < stages.Length && elapsed >= durations[stage]) elapsed -= durations[stage++];
         }
+        else elapsed = stageElapsed;
+        if (stage < 0 || stage >= stages.Length || !float.IsFinite(elapsed) || elapsed < 0f || elapsed >= durations[stage]) return;
+        if (stages[stage].m_WeatherType == WeatherStage.ElectrostaticFog &&
+            !sky.IsInsideElectrostaticFogActivationWindow()) return;
+
         var previous = (WeatherStage)previousStage;
-        float progress = Mathf.Clamp01(start);
-        float elapsed = progress * duration;
-        int stage = 0;
-        while (stage + 1 < selected.m_WeatherStages.Length && elapsed >= selected.m_WeatherStages[stage].m_CurrentDuration)
-            elapsed -= selected.m_WeatherStages[stage++].m_CurrentDuration;
-        if (activeStage >= 0 && activeStage < selected.m_WeatherStages.Length && float.IsFinite(stageElapsed))
+        if (previous < WeatherStage.DenseFog || previous >= WeatherStage.Undefined ||
+            (previous == WeatherStage.ElectrostaticFog && !weather.IsElectrostaticFog())) previous = WeatherStage.Undefined;
+
+        selected.m_CurrentSetDuration = duration;
+        for (int i = 0; i < stages.Length; i++)
         {
-            stage = activeStage;
-            var stageDuration = selected.m_WeatherStages[stage].m_CurrentDuration;
-            elapsed = Mathf.Clamp(stageElapsed, 0f, Mathf.Max(0f, stageDuration - .0001f));
-            float beforeStage = 0f;
-            for (int i = 0; i < stage; i++) beforeStage += selected.m_WeatherStages[i].m_CurrentDuration;
-            progress = Mathf.Clamp01((beforeStage + Mathf.Min(stageDuration, elapsed + .00001f)) / duration);
+            stages[i].m_CurrentDuration = durations[i];
+            stages[i].m_CurrentTransitionTime = transitions[i];
         }
-        if (current != selected)
-            transition.ActivateWeatherSet(selected, progress, previous);
-        else if (current.m_CurrentIndex != stage)
-            current.ForceTransitionToStep(stage);
-        if (selected.m_CurrentIndex == stage)
-            selected.m_WeatherStages[stage].m_ElapsedTime = elapsed;
+        if (current != selected || current.m_CurrentIndex != stage)
+        {
+            float beforeStage = 0f;
+            for (int i = 0; i < stage; i++) beforeStage += durations[i];
+            // Stay inside the reported stage even when progress rounds to a stage boundary.
+            float inset = Mathf.Min(.00001f, durations[stage] * .25f);
+            float progress = (beforeStage + Mathf.Clamp(elapsed, inset, durations[stage] - inset)) / duration;
+            weatherTransition.ActivateWeatherSet(selected, Mathf.Clamp01(progress), previous);
+        }
+        if (selected.m_CurrentIndex != stage) return;
+        stages[stage].m_ElapsedTime = elapsed;
         weather.m_TempHigh = high;
         weather.m_TempLow = low;
         syncedWeatherScene = MyMod.level_guid;
@@ -1460,7 +1481,7 @@ public class ClientHandle
 		int activeStage = _packet.ReadInt();
 		float stageElapsed = _packet.ReadFloat();
 		long weatherRevision = _packet.ReadLong();
-		if (region == MyMod.GetCurrentRegionIfPossible() && !MyMod.LoadingScreenIsOn &&
+		if (region == Shared.GetNativeWeatherRegion() &&
 			(!weatherRevisions.TryGetValue(region, out long lastRevision) || weatherRevision > lastRevision))
 		{
 			weatherRevisions[region] = weatherRevision;
@@ -1471,7 +1492,7 @@ public class ClientHandle
 	public static void WEATHERVOLUNTEER(Packet _packet)
 	{
 		int num = _packet.ReadInt();
-		if (MyMod.level_name != "Boot" && MyMod.level_name != "Empty" && GameManager.m_Wind != null && GameManager.m_Wind.m_ActiveSettings != null && GameManager.m_Weather != null && GameManager.m_WeatherTransition != null && GameManager.GetUniStorm() != null && RegionCompat.GetCurrentRegion() == (Shared.GameRegion)num)
+		if (num == Shared.GetNativeWeatherRegion())
 		{
 			using (Packet packet = new Packet(151))
 			{
@@ -1484,7 +1505,7 @@ public class ClientHandle
 	public static void REREGISTERWEATHER(Packet _packet)
 	{
 		int num = _packet.ReadInt();
-		if (MyMod.level_name != "Boot" && MyMod.level_name != "Empty" && GameManager.m_Wind != null && GameManager.m_Wind.m_ActiveSettings != null && GameManager.m_Weather != null && GameManager.m_WeatherTransition != null && GameManager.GetUniStorm() != null && RegionCompat.GetCurrentRegion() == (Shared.GameRegion)num)
+		if (num == Shared.GetNativeWeatherRegion())
 		{
 			Pathes.SendWeatherVolunteerData();
 		}

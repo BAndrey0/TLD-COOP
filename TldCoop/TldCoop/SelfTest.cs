@@ -609,11 +609,7 @@ public static class SelfTest
 				if (Time.realtimeSinceStartup >= furnitureReadyAt)
 				{
 					furnitureTestFinished = true;
-					bool host = MyMod.iAmHost;
-					MyMod.iAmHost = true;
-					try { ScenePlacementSync.ProbeCookingAndBooks(); }
-					catch (Exception ex) { MelonLogger.Error("[Cooking QA] FAIL " + ex); }
-					finally { MyMod.iAmHost = host; Application.Quit(); }
+					MelonCoroutines.Start(CheckCookingAndCuring());
 				}
 			}
 		}
@@ -768,6 +764,37 @@ public static class SelfTest
 			}
 		}
 		MelonLogger.Warning("[SelfTest] Slot " + slot + " not found");
+	}
+
+	private static System.Collections.IEnumerator CheckCookingAndCuring()
+	{
+		bool host = MyMod.iAmHost;
+		MyMod.iAmHost = true;
+		try
+		{
+			var player = GameManager.GetPlayerManagerComponent();
+			float until = Time.realtimeSinceStartup + 2f;
+			do { yield return null; }
+			while (!GearPlacementSync.CanInteract(player) && Time.realtimeSinceStartup < until);
+
+			var probe = MyMod.ProbeCuredPickup((passed, message) =>
+			{
+				if (!passed) throw new InvalidOperationException(message);
+				MelonLogger.Msg("[Cooking QA] PASS " + message);
+			});
+			using (probe as IDisposable)
+				while (probe.MoveNext()) yield return probe.Current;
+			ScenePlacementSync.ProbeCookingAndBooks();
+			var autoWalk = Il2CppRewired.ReInput.mapping.GetAction(100);
+			if (autoWalk?.name != "AutoWalk") throw new InvalidOperationException($"Input action 100 is still mapped to {autoWalk?.name}.");
+			MelonLogger.Msg("[Cooking QA] PASS native input action 100 is AutoWalk");
+			MelonLogger.Msg("[Cooking QA] PASS complete");
+		}
+		finally
+		{
+			MyMod.iAmHost = host;
+			Application.Quit();
+		}
 	}
 
 	private static void CheckFurnitureCrash()

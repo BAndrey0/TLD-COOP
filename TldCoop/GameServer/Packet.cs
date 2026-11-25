@@ -1342,6 +1342,7 @@ public class Packet : IDisposable
 
 	public void Write(DataStr.CougarStateSync obj)
 	{
+		Write(obj.m_Initialized);
 		Write(obj.m_Enabled);
 		Write(obj.m_ActiveRegionName);
 		Write(obj.m_RegionNames.Count);
@@ -1351,20 +1352,27 @@ public class Packet : IDisposable
 			Write(obj.m_ThreatLevels[i]);
 			Write(obj.m_ThreatCooldowns[i]);
 		}
+		Write(obj.m_ArrivedTerritories.Count);
+		foreach (string name in obj.m_ArrivedTerritories) Write(name);
 	}
 
 	public DataStr.CougarStateSync ReadCougarState()
 	{
 		DataStr.CougarStateSync cougarStateSync = new DataStr.CougarStateSync();
+		cougarStateSync.m_Initialized = ReadBool();
 		cougarStateSync.m_Enabled = ReadBool();
 		cougarStateSync.m_ActiveRegionName = ReadString();
 		int num = ReadInt();
+		if (num < 0 || num > 64) return null;
 		for (int i = 0; i < num; i++)
 		{
 			cougarStateSync.m_RegionNames.Add(ReadString());
 			cougarStateSync.m_ThreatLevels.Add(ReadInt());
 			cougarStateSync.m_ThreatCooldowns.Add(ReadFloat());
 		}
+		int arrivals = ReadInt();
+		if (arrivals < 0 || arrivals > 64) return null;
+		for (int i = 0; i < arrivals; i++) cougarStateSync.m_ArrivedTerritories.Add(ReadString());
 		return cougarStateSync;
 	}
 

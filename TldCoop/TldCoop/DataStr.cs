@@ -963,7 +963,7 @@ public class DataStr
 
 		public int WarmingHours;
 
-		public int PreviousStage = 10;
+		public int PreviousStage = (int)WeatherStage.Undefined;
 	}
 
 	public enum SlicedBase64Purpose
@@ -1002,6 +1002,8 @@ public class DataStr
 
 	public class CougarStateSync
 	{
+		public bool m_Initialized;
+
 		public bool m_Enabled;
 
 		public string m_ActiveRegionName = "";
@@ -1011,6 +1013,8 @@ public class DataStr
 		public List<int> m_ThreatLevels = new List<int>();
 
 		public List<float> m_ThreatCooldowns = new List<float>();
+
+		public List<string> m_ArrivedTerritories = new List<string>();
 	}
 
 	public class TraderStateSync

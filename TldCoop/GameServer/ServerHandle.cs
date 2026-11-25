@@ -1061,6 +1061,7 @@ internal class ServerHandle
 			ServerSend.ADDUNIVERSALSYNCABLE(item6.Value, _fromClient);
 		}
 		Shared.ModifyDynamicGears(text);
+		CollectibleNoteSync.SendSnapshot(_fromClient);
 		Dictionary<int, DataStr.DroppedGearItemDataPacket> dictionary5 = MPSaveManager.LoadDropVisual(text);
 		var savedDrops = MPSaveManager.LoadDropData(text);
 		if (savedDrops == null || dictionary5 == null)
@@ -1641,8 +1642,8 @@ internal class ServerHandle
 	public static void COUGARSTATE(int _fromClient, Packet _packet)
 	{
 		DataStr.CougarStateSync cougarStateSync = _packet.ReadCougarState();
-		FarTerritory.CougarSync.Apply(cougarStateSync);
-		ServerSend.COUGARSTATE(cougarStateSync);
+		if (FarTerritory.CougarSync.Apply(cougarStateSync, fromHost: false))
+			ServerSend.COUGARSTATE(FarTerritory.CougarSync.Capture());
 	}
 
 	public static void TRADERSTATE(int _fromClient, Packet _packet)

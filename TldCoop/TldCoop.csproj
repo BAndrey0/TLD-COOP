@@ -26,6 +26,9 @@
     <Reference Include="Assembly-CSharp">
       <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
     </Reference>
+    <Reference Include="Il2CppRewired_Core">
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Il2CppRewired_Core.dll</HintPath>
+    </Reference>
     <Reference Include="0Harmony">
       <HintPath>$(GameDir)\MelonLoader\net6\0Harmony.dll</HintPath>
     </Reference>

@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.42";
+		public const string Version = "0.16.43";
 
 		public const string DownloadLink = null;
 
@@ -1095,7 +1095,9 @@ public class MyMod : MelonMod
 			MelonLogger.Msg(System.ConsoleColor.Red, "Gear prefab with name " + gearName + " not exist! Maybe you miss an modded item pack?");
 			return;
 		}
-		GameObject gameObject = UnityEngine.Object.Instantiate(gearItemObject, new Vector3(0f, 0f, 0f), Quaternion.identity);
+		DataStr.ExtraDataForDroppedGear extra = jData.m_Extra;
+		GameObject gameObject = UnityEngine.Object.Instantiate(place ? gearItemObject : ResolveCuredPickup(gearItemObject, extra),
+			Vector3.zero, Quaternion.identity);
 		DisableObjectForXPMode.RemoveDisabler(gameObject.gameObject);
 		if (gameObject == null)
 		{
@@ -1103,7 +1105,6 @@ public class MyMod : MelonMod
 			return;
 		}
 		gameObject.name = CloneTrimer(gameObject.name);
-		DataStr.ExtraDataForDroppedGear extra = jData.m_Extra;
 		GearItem component = gameObject.GetComponent<GearItem>();
 		if (!string.IsNullOrEmpty(value3))
 		{
@@ -1137,17 +1138,7 @@ public class MyMod : MelonMod
 		if (!place) gameObject.transform.SetPositionAndRotation(LastPickedVisualPosition, LastPickedVisualRotation);
 		if (extra != null)
 		{
-			if (extra.m_GoalTime != 0 && extra.m_GoalTime != -1)
-			{
-				GearItem component3 = gameObject.GetComponent<GearItem>();
-				if (component3.m_EvolveItem != null)
-				{
-					int num2 = MinutesFromStartServer - extra.m_DroppedTime;
-					component3.m_EvolveItem.m_TimeSpentEvolvingGameHours = (float)num2 / 60f;
-					MelonLogger.Msg(System.ConsoleColor.Blue, "Saving minutesOnDry " + num2);
-					MelonLogger.Msg(System.ConsoleColor.Blue, "m_TimeSpentEvolvingGameHours " + component3.m_EvolveItem.m_TimeSpentEvolvingGameHours);
-				}
-			}
+			RestoreCuringProgress(component, extra);
 			if (!string.IsNullOrEmpty(extra.m_ExpeditionNote))
 			{
 				CreateCustomNote(extra.m_ExpeditionNote, gameObject.GetComponent<GearItem>());
@@ -5374,6 +5365,7 @@ public class MyMod : MelonMod
 		FireHeatSync.Tick();
 		AvatarLighting.Tick();
 		ScenePlacementSync.Tick();
+		CollectibleNoteSync.Tick();
 		if (Shared.IsMainMenuScene(level_name))
 		{
 			if (NeedConnectAfterLoad > 0)
@@ -6869,6 +6861,11 @@ public class MyMod : MelonMod
 			if (component != null)
 			{
 				var evolve = component.m_EvolveItem;
+				if (evolve != null)
+				{
+					evolve.enabled = false;
+					evolve.m_ForceNoAutoEvolve = true;
+				}
 				if (extra.m_GoalTime == -1 && evolve != null && evolve.m_RequireIndoors &&
 					evolve.m_GearItemToBecome != null && evolve.IsIndoorScene())
 				{
@@ -7036,6 +7033,88 @@ public class MyMod : MelonMod
 			AddSlicedJsonDataForPicker(new DataStr.SlicedJsonData { m_Hash = key, m_Last = true,
 				m_Str = data.m_Json, m_Extra = ThrownFlareSync.SnapshotPickup(data.m_Extra) }, place: true);
 		else GearPlacementSync.MissingPreview(key);
+	}
+
+	private static GameObject ResolveCuredPickup(GameObject prefab, DataStr.ExtraDataForDroppedGear extra)
+	{
+		// The drop journal still names the original item. Materialize its final
+		// form directly, so native evolution cannot replace an inspected object
+		// and leave the replacement behind when the player takes or cancels it.
+		if (extra == null || extra.m_GoalTime <= 0 || MinutesFromStartServer < extra.m_GoalTime) return prefab;
+		var evolve = prefab.GetComponent<GearItem>()?.m_EvolveItem ?? prefab.GetComponent<EvolveItem>();
+		var result = evolve?.m_GearItemToBecome;
+		return result != null ? result.gameObject : prefab;
+	}
+
+	private static void RestoreCuringProgress(GearItem gear, DataStr.ExtraDataForDroppedGear extra)
+	{
+		var evolve = gear.m_EvolveItem;
+		if (evolve == null || extra == null || extra.m_GoalTime <= 0) return;
+		float hours = System.Math.Max(0L, (long)MinutesFromStartServer - extra.m_DroppedTime) / 60f;
+		evolve.m_TimeSpentEvolvingGameHours = Mathf.Clamp(hours, 0f, evolve.m_TimeToEvolveGameDays * 24f);
+	}
+
+	internal static System.Collections.IEnumerator ProbeCuredPickup(System.Action<bool, string> check)
+	{
+		const string rawName = "GEAR_BearHide";
+		const string curedName = "GEAR_BearHideDried";
+		const int key = -64983156;
+		int previousTime = MinutesFromStartServer;
+		MinutesFromStartServer = System.Math.Max(MinutesFromStartServer, 15000);
+		var player = GameManager.GetPlayerManagerComponent();
+		var inventory = GameManager.GetInventoryComponent();
+		var position = player.transform.position + player.transform.forward;
+		var source = UnityEngine.Object.Instantiate(GetGearItemObject(rawName), position, Quaternion.identity).GetComponent<GearItem>();
+		try
+		{
+			source.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
+			source.m_BeenInPlayerInventory = true;
+			source.SetNormalizedHP(.72f, false);
+			float condition = source.GetNormalizedCondition();
+			var extra = new DataStr.ExtraDataForDroppedGear
+			{
+				m_GearName = rawName,
+				m_DroppedTime = MinutesFromStartServer - 14 * 1440,
+				m_GoalTime = MinutesFromStartServer - 1
+			};
+			MPSaveManager.AddGearData(level_guid, key, new DataStr.SlicedJsonDroppedGear
+			{
+				m_GearName = rawName, m_Json = source.SerializeToString(), m_Extra = extra
+			});
+			var prefab = GetGearItemObject(rawName);
+			extra.m_GoalTime = MinutesFromStartServer + 1;
+			check(ResolveCuredPickup(prefab, extra) == prefab, "unfinished hide remains raw");
+			extra.m_GoalTime = MinutesFromStartServer - 1;
+			var curedPrefab = ResolveCuredPickup(prefab, extra);
+			check(curedPrefab != prefab, "completed timer resolves the native cured prefab");
+			FakeDropItem(0, position, Quaternion.identity, key, extra);
+			int before = inventory.NumGearInInventory(curedName);
+			int beforeWorld = UnityEngine.Object.FindObjectsOfType<GearItem>().Count(item =>
+				!item.m_InPlayerInventory && item.GetGearName() == curedName);
+			PickupDroppedGear(DroppedGearsObjs[key]);
+			var item = UnityEngine.Object.FindObjectsOfType<GearItem>().SingleOrDefault(gear =>
+				gear.GetComponent<Comps.DropFakeOnLeave>()?.m_SearchKey == key);
+			check(item != null && string.Equals(item.GetGearName(), curedName, System.StringComparison.OrdinalIgnoreCase) &&
+				Mathf.Abs(item.GetNormalizedCondition() - condition) < .01f,
+				$"completed hide is reconstructed as cured at its original condition (gear={item?.GetGearName()}, hp={item?.GetNormalizedCondition()}, expected={condition})");
+			if (player.IsInspectModeActive() && player.GearItemBeingInspected() == item)
+				player.OnPickupFromStandardGearItemInspection();
+			else
+				inventory.AddGear(item);
+			float until = Time.realtimeSinceStartup + 2f;
+			while (inventory.NumGearInInventory(curedName) == before && Time.realtimeSinceStartup < until) yield return null;
+			for (int frame = 0; frame < 3; frame++) yield return null;
+			int afterWorld = UnityEngine.Object.FindObjectsOfType<GearItem>().Count(gear =>
+				!gear.m_InPlayerInventory && gear.GetGearName() == curedName);
+			check(inventory.NumGearInInventory(curedName) == before + 1 && beforeWorld == afterWorld &&
+				!DroppedGearsObjs.ContainsKey(key) && MPSaveManager.RequestSpecificGear(key, level_guid, Remove: false) == null,
+				"cured hide pickup leaves one inventory item and no world copy");
+		}
+		finally
+		{
+			MinutesFromStartServer = previousTime;
+			UnityEngine.Object.Destroy(source.gameObject);
+		}
 	}
 
 	private static void InitializePickedDrop(GearItem gear, DataStr.ExtraDataForDroppedGear extra)
@@ -7212,7 +7291,9 @@ public class MyMod : MelonMod
 					MelonLogger.Msg(System.ConsoleColor.Red, "Gear prefab with name " + text3 + " not exist! Maybe you miss an modded item pack?");
 					return;
 				}
-				GameObject gameObject = UnityEngine.Object.Instantiate(gearItemObject, position, rotation);
+				var drop = obj.GetComponent<Comps.DroppedGearDummy>();
+				var extra = drop.m_Extra;
+				GameObject gameObject = UnityEngine.Object.Instantiate(ResolveCuredPickup(gearItemObject, extra), position, rotation);
 				DisableObjectForXPMode.RemoveDisabler(gameObject.gameObject);
 				if (gameObject == null)
 				{
@@ -7220,7 +7301,7 @@ public class MyMod : MelonMod
 					return;
 				}
 				gameObject.name = CloneTrimer(gameObject.name);
-				Comps.DroppedGearDummy component = obj.GetComponent<Comps.DroppedGearDummy>();
+				Comps.DroppedGearDummy component = drop;
 				if (!string.IsNullOrEmpty(slicedJsonDroppedGear.m_Json))
 				{
 					DeserializeDroppedGear(gameObject.GetComponent<GearItem>(), slicedJsonDroppedGear.m_Json, component.m_Extra);
@@ -7255,17 +7336,7 @@ public class MyMod : MelonMod
 				dropFakeOnLeave.m_OldPossition = position;
 				dropFakeOnLeave.m_OldRotation = rotation;
 				gameObject.transform.SetPositionAndRotation(position, rotation);
-				if (component != null && component.m_Extra.m_GoalTime != 0 && component.m_Extra.m_GoalTime != -1)
-				{
-					GearItem component3 = gameObject.GetComponent<GearItem>();
-					if (component3.m_EvolveItem != null)
-					{
-						int num3 = MinutesFromStartServer - component.m_Extra.m_DroppedTime;
-						component3.m_EvolveItem.m_TimeSpentEvolvingGameHours = (float)num3 / 60f;
-						MelonLogger.Msg(System.ConsoleColor.Blue, "Saving minutesOnDry " + num3);
-						MelonLogger.Msg(System.ConsoleColor.Blue, "m_TimeSpentEvolvingGameHours " + component3.m_EvolveItem.m_TimeSpentEvolvingGameHours);
-					}
-				}
+				RestoreCuringProgress(gameObject.GetComponent<GearItem>(), extra);
 				bool flag = false;
 				if (gameObject.GetComponent<GearItem>().m_Bed != null)
 				{

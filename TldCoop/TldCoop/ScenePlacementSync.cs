@@ -982,7 +982,34 @@ internal static class ScenePlacementSync
             var center = remote.Hitboxes[0].bounds.center;
             foreach (var direction in new[] { Vector3.forward, Vector3.back, Vector3.left, Vector3.right, Vector3.up })
                 Check(AimCookware(new Ray(center + direction, -direction), 2f) == remote.Visual, sample.Item1 + " aim " + direction);
-            Check(!string.IsNullOrEmpty(CookingHover(remote.Visual)), sample.Item1 + " has a cooking tooltip");
+            var player = GameManager.GetPlayerManagerComponent();
+            var camera = GameManager.GetVpFPSCamera().GetCameraComponent().transform;
+            var view = Pose.From(camera);
+            try
+            {
+                var direction = (Vector3.up + Vector3.forward * .35f).normalized;
+                camera.SetPositionAndRotation(center + direction, Quaternion.LookRotation(-direction));
+                Check(player.GetInteractiveObjectUnderCrosshairs(2.5f) == remote.Visual,
+                    sample.Item1 + " actual crosshair selects the center");
+                player.FindInteractiveObject(2.5f);
+                Check(player.HasInteractiveObjectUnderCrossHair() &&
+                    player.ActiveInteraction?.GetInteractiveObject() == remote.Visual &&
+                    player.GetInteractiveObjectDisplayTextState() == HoverTextState.CanInteract &&
+                    player.GetInteractiveObjectHoverText() == CookingHover(remote.Visual),
+                    sample.Item1 + " actual HUD displays the shared status");
+                if (sample.Item1 == "GEAR_CookingPot")
+                {
+                    Check(player.InteractiveObjectsProcessInteraction() && player.IsInspectModeActive(),
+                        "native use input opens shared cooking inspection");
+                    player.ExitInspectGearMode(true);
+                    Check(inspection == null && RemotePots.ContainsKey((owner, key)), "cancel keeps the portion on its original slot");
+                }
+            }
+            finally
+            {
+                player.ResetInteraction();
+                camera.SetPositionAndRotation(view.Position, view.Rotation);
+            }
             if (sample.Item1 == "GEAR_CookingPot")
             {
                 var obstacle = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -995,12 +1022,6 @@ internal static class ScenePlacementSync
                 obstacle.SetActive(false);
                 UnityEngine.Object.Destroy(obstacle);
 
-                Publish(filled with { Mode = "Ready" });
-                var player = GameManager.GetPlayerManagerComponent();
-                Check(OpenCookingActions(RemotePots[(owner, key)].Visual) && player.IsInspectModeActive(),
-                    "remote cooked recipe opens the original inspect interface");
-                player.ExitInspectGearMode(true);
-                Check(inspection == null && RemotePots.ContainsKey((owner, key)), "cancel keeps the portion on its original slot");
             }
             Publish(null);
         }
@@ -1085,7 +1106,6 @@ internal static class ScenePlacementSync
             "same book resumes the current reader's progress");
         RetireCookingGear(book);
         RetireCookingGear(other);
-        MelonLoader.MelonLogger.Msg("[Cooking QA] PASS complete");
     }
 
     internal static void ProbeGuestCooking()
@@ -1376,15 +1396,64 @@ internal static class ScenePlacementSync
         return CookingSlotVacant(point) ? FindRemotePot(point) : null;
     }
 
-    internal static GameObject AimCookware(float range, RaycastHit worldHit = default)
+    private static readonly Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<RaycastHit> CookingOccluders = new(16);
+
+    private static GameObject AimCookware(float range)
     {
-        if (RemotePots.Count == 0) return null;
+        if (RemotePots.Count == 0 || !InWorld || CoopReturnToMenu.InProgress) return null;
         var camera = GameManager.GetVpFPSCamera()?.GetCameraComponent();
         if (camera == null) return null;
         var ray = new Ray(camera.transform.position, camera.transform.forward);
-        if (worldHit.collider == null)
-            Physics.Raycast(ray, out worldHit, range, Utils.m_PhysicalCollisionLayerMask, QueryTriggerInteraction.Ignore);
-        return AimCookware(ray, range, worldHit);
+        var selected = AimCookware(ray, range);
+        var replica = FindRemoteCookware(selected)?.Value;
+        if (replica == null) return null;
+        float distance = range;
+        foreach (var collider in replica.Hitboxes)
+            if (collider != null && collider.Raycast(ray, out var hit, distance)) distance = hit.distance;
+        int count = Physics.RaycastNonAlloc(ray, CookingOccluders, distance, Utils.m_PhysicalCollisionLayerMask, QueryTriggerInteraction.Ignore);
+        var blockers = CookingOccluders;
+        if (count == blockers.Length)
+        {
+            blockers = Physics.RaycastAll(ray, distance, Utils.m_PhysicalCollisionLayerMask, QueryTriggerInteraction.Ignore);
+            count = blockers.Length;
+        }
+        for (int i = 0; i < count; i++)
+            if (BlocksCookware(blockers[i], distance, replica.State.Slot.Position)) return null;
+        return selected;
+    }
+
+    // FindInteractiveObject runs only after a native scene hit. Select the
+    // cookware at the crosshair entry points even when only its replica is hit.
+    [HarmonyPatch]
+    private static class CrosshairCookwareTarget
+    {
+        private static IEnumerable<System.Reflection.MethodBase> TargetMethods()
+        {
+            yield return AccessTools.Method(typeof(PlayerManager), nameof(PlayerManager.GetInteractiveObjectUnderCrosshairs));
+            yield return AccessTools.Method(typeof(PlayerManager), nameof(PlayerManager.GetInteractiveObjectNearCrosshairs));
+        }
+
+        private static bool Prefix(float __0, ref GameObject __result)
+        {
+            var target = AimCookware(__0);
+            if (target == null) return true;
+            __result = target;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(PlayerManager), nameof(PlayerManager.FindInteractiveObject), new[] { typeof(float) })]
+    private static class SelectSharedCookwareInteraction
+    {
+        private static bool Prefix(PlayerManager __instance, float __0)
+        {
+            var target = AimCookware(__0);
+            if (target == null || !target.TryGetComponent<Comps.SharedCookwareInteraction>(out var interaction)) return true;
+            var native = interaction.Cast<Il2CppTLD.Interactions.IInteraction>();
+            __instance.m_LocationOfLastInteractHit = target.transform.position;
+            __instance.SetCurrentInteraction(native);
+            return false;
+        }
     }
 
     private static GameObject AimCookware(Ray ray, float nearest, RaycastHit worldHit = default)
@@ -2056,6 +2125,8 @@ internal static class ScenePlacementSync
         }
         else if (cooking != null && IsCookingGearName(pot.Food))
             CopyCookwareFood(pot, prefab, cooking, root);
+        var interaction = root.AddComponent<Comps.SharedCookwareInteraction>();
+        interaction.m_EventEntries = new Il2CppSystem.Collections.Generic.List<Il2CppTLD.Interactions.InteractionEventEntry>();
         return root;
     }
 
@@ -2119,15 +2190,6 @@ internal static class ScenePlacementSync
         target.localPosition = inverseRotation * (source.position - prefab.position);
         target.localRotation = inverseRotation * source.rotation;
         target.localScale = source.lossyScale;
-    }
-
-    internal static GameObject CookwareReplicaRoot(GameObject target)
-    {
-        if (target == null) return null;
-        foreach (var pot in RemotePots.Values)
-            if (pot.Visual != null && (target == pot.Visual || target.transform.IsChildOf(pot.Visual.transform)))
-                return pot.Visual;
-        return null;
     }
 
     private static bool ActiveBelow(Transform child, Transform root)

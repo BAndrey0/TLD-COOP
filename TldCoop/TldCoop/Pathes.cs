@@ -3511,8 +3511,6 @@ public class Pathes
 	{
 		internal static void Postfix(PlayerManager __instance, ref string __result)
 		{
-			string cookware = ScenePlacementSync.CookingHover(__instance.GetInteractiveObjectUnderCrosshair());
-			if (cookware != null) { __result = cookware; return; }
 			PostfixInternal(__instance, __instance.GetInteractiveObjectUnderCrosshair(), ref __result);
 		}
 
@@ -3669,14 +3667,6 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
-			var cookware = hit.transform != null ? ScenePlacementSync.CookwareReplicaRoot(hit.transform.gameObject) : null;
-			if (cookware == null) cookware = ScenePlacementSync.AimCookware(2.5f, hit);
-			if (cookware != null)
-			{
-				gi = null;
-				interactiveObj = cookware;
-				return;
-			}
 			if (hit.transform == null) return;
 			var dropped = DroppedGearInteraction.Find(hit.transform.gameObject);
 			if (dropped != null)
@@ -3744,7 +3734,6 @@ public class Pathes
 		internal static bool Prefix(PlayerManager __instance, ref bool __result)
 		{
 			var target = __instance.GetInteractiveObjectUnderCrosshair();
-			if (ScenePlacementSync.OpenCookingActions(target)) { __result = true; return false; }
 			var corpse = target != null ? target.GetComponentInParent<Comps.AnimalCorpseObject>() : null;
 			if (MyMod.InOnline() && MyMod.CanPickUpSmallGame(corpse))
 			{
@@ -6761,8 +6750,8 @@ public class Pathes
 		}
 	}
 
-	[HarmonyPatch(typeof(WeatherSet), "Update")]
-	internal static class WeatherSet_Update
+	[HarmonyPatch(typeof(WeatherSetData), nameof(WeatherSetData.UpdateWeatherSet))]
+	internal static class WeatherSetData_UpdateWeatherSet
 	{
 		private static void Prefix(out (float Scalar, (TimeOfDay Clock, float Scale) WorkClock) __state)
 		{
@@ -7908,34 +7897,36 @@ public class Pathes
 
 	public static DataStr.WeatherVolunteerData GetWeatherVolunteerData(bool DoNext = false)
 	{
-		DataStr.WeatherVolunteerData weatherVolunteerData = new DataStr.WeatherVolunteerData();
-		if (GameManager.m_Weather != null && GameManager.m_WeatherTransition != null && GameManager.m_WeatherTransition.m_CurrentWeatherSet != null && GameManager.GetUniStorm() != null)
+		int? nativeRegion = Shared.GetNativeWeatherRegion();
+		var weatherVolunteerData = new DataStr.WeatherVolunteerData
+		{
+			CurrentRegion = nativeRegion ?? (int)RegionCompat.GetCurrentRegion()
+		};
+		if (nativeRegion.HasValue)
 		{
 			Weather weatherComponent = GameManager.GetWeatherComponent();
-			WeatherStage currentWeatherStage = weatherComponent.m_CurrentWeatherStage;
 			WeatherTransition weatherTransitionComponent = GameManager.GetWeatherTransitionComponent();
 			if (DoNext)
 			{
-				weatherTransitionComponent.ChooseNextWeatherSet(weatherTransitionComponent.m_Weights);
+				weatherTransitionComponent.ChooseNextWeatherSet();
 			}
+			WeatherSetData currentWeatherSet = weatherTransitionComponent.m_CurrentWeatherSet;
+			var stages = currentWeatherSet?.m_WeatherStages;
+			if (stages == null || stages.Length == 0) return weatherVolunteerData;
 			weatherVolunteerData.HighMin = weatherComponent.m_HighTempMinCelsius;
 			weatherVolunteerData.HighMax = weatherComponent.m_HighTempMaxCelsius;
 			weatherVolunteerData.LowMin = weatherComponent.m_LowTempMinCelsius;
 			weatherVolunteerData.LowMax = weatherComponent.m_LowTempMaxCelsius;
 			weatherVolunteerData.CoolingHours = weatherComponent.m_HourCoolingBegins;
 			weatherVolunteerData.WarmingHours = weatherComponent.m_HourWarmingBegins;
-			WeatherSetData currentWeatherSet = GameManager.GetWeatherTransitionComponent().m_CurrentWeatherSet;
-			if (!DoNext && currentWeatherSet.m_WeatherStages.Length > 0)
-				currentWeatherStage = currentWeatherSet.m_WeatherStages[0].m_PreviousType;
 			weatherVolunteerData.WeatherType = (int)currentWeatherSet.m_CharacterizingType;
 			weatherVolunteerData.SetName = currentWeatherSet.name;
 			weatherVolunteerData.WeatherDuration = currentWeatherSet.m_CurrentSetDuration;
-			weatherVolunteerData.CurrentRegion = (int)RegionCompat.GetCurrentRegion();
-			weatherVolunteerData.PreviousStage = (int)currentWeatherStage;
-			for (int i = 0; i < currentWeatherSet.m_WeatherStages.Count; i++)
+			weatherVolunteerData.PreviousStage = (int)stages[0].m_PreviousType;
+			for (int i = 0; i < stages.Length; i++)
 			{
-				weatherVolunteerData.StageDuration.Add(currentWeatherSet.m_WeatherStages[i].m_CurrentDuration);
-				weatherVolunteerData.StageTransition.Add(currentWeatherSet.m_WeatherStages[i].m_CurrentTransitionTime);
+				weatherVolunteerData.StageDuration.Add(stages[i].m_CurrentDuration);
+				weatherVolunteerData.StageTransition.Add(stages[i].m_CurrentTransitionTime);
 			}
 			for (int j = 0; j < weatherComponent.m_WeatherSetsForScene.Count; j++)
 			{
@@ -7946,28 +7937,15 @@ public class Pathes
 				}
 			}
 		}
-		else
-		{
-			weatherVolunteerData.WeatherType = 4;
-			weatherVolunteerData.WeatherDuration = 1f;
-			if (GameManager.GetUniStorm() != null)
-			{
-				weatherVolunteerData.CurrentRegion = (int)RegionCompat.GetCurrentRegion();
-			}
-			else
-			{
-				weatherVolunteerData.CurrentRegion = 0;
-			}
-			weatherVolunteerData.StageDuration.Add(1f);
-			weatherVolunteerData.StageTransition.Add(0f);
-		}
 		return weatherVolunteerData;
 	}
 
 	public static void SendWeatherVolunteerData()
 	{
+		var weather = GetWeatherVolunteerData(DoNext: true);
+		if (string.IsNullOrEmpty(weather.SetName)) return;
 		using Packet packet = new Packet(152);
-		packet.Write(GetWeatherVolunteerData(DoNext: true));
+		packet.Write(weather);
 		SendTCPData(packet);
 	}
 

@@ -909,6 +909,7 @@ internal class ClientUser
 		packetHandlers[195] = SessionPing.Receive;
 		packetHandlers[196] = AnimalTracksSync.Receive;
 		packetHandlers[ScenePlacementSync.ServerPacket] = ScenePlacementSync.Receive;
+		packetHandlers[CollectibleNoteSync.PacketId] = CollectibleNoteSync.Receive;
 		MelonLogger.Msg("Initialized packets.");
 	}
 }

@@ -847,7 +847,8 @@ internal class Server
 		{ 196, MotionSync.ReceiveClient },
 		{ 197, SessionPing.ReceiveClient },
 		{ 198, AnimalTracksSync.ReceiveClient },
-		{ ScenePlacementSync.ClientPacket, ScenePlacementSync.ReceiveClient }
+		{ ScenePlacementSync.ClientPacket, ScenePlacementSync.ReceiveClient },
+		{ CollectibleNoteSync.PacketId, CollectibleNoteSync.ReceiveClient }
 		};
 		Log("Initialized packets.");
 	}

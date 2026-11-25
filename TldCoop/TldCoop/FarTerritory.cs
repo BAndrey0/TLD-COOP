@@ -17,27 +17,29 @@ public static class FarTerritory
 {
 	public static class CougarSync
 	{
-		private static CougarManager s_Manager;
-
 		private static float s_NextPush;
 
 		private static string s_LastSnapshot = "";
 
+		private static DataStr.CougarStateSync s_PendingHostSnapshot;
+
 		private const float PushIntervalSeconds = 5f;
 
-		public static CougarManager GetManager()
-		{
-			if (s_Manager == null)
-			{
-				s_Manager = UnityEngine.Object.FindObjectOfType<CougarManager>();
-			}
-			return s_Manager;
-		}
+		public static CougarManager GetManager() =>
+			WildlifeSpawnAuthorityPolicy.WorldScene(MyMod.level_name) && !MyMod.LoadingScreenIsOn
+				? GameManager.GetCougarManager() : null;
 
 		public static void OnSceneChanged()
 		{
-			s_Manager = null;
+			if (!MyMod.InOnline()) ResetSession();
 			s_LastSnapshot = "";
+		}
+
+		internal static void ResetSession()
+		{
+			s_PendingHostSnapshot = null;
+			s_LastSnapshot = "";
+			s_NextPush = 0f;
 		}
 
 		public static DataStr.CougarStateSync Capture()
@@ -50,8 +52,16 @@ public static class FarTerritory
 			}
 			try
 			{
+				if (manager.m_CougarTerritories == null || manager.m_CougarTerritories.Count == 0) return cougarStateSync;
+				cougarStateSync.m_Initialized = true;
 				cougarStateSync.m_Enabled = manager.IsEnabled;
 				cougarStateSync.m_ActiveRegionName = manager.m_ActiveRegionName ?? "";
+				foreach (var territory in manager.m_CougarTerritories)
+				{
+					var name = territory?.m_Name?.m_LocalizationID;
+					if (territory?.m_CougarState == CougarManager.CougarState.HasArrived && !string.IsNullOrEmpty(name))
+						cougarStateSync.m_ArrivedTerritories.Add(name);
+				}
 				Il2CppSystem.Collections.Generic.Dictionary<string, int> currentThreatLevelByRegion = manager.m_CurrentThreatLevelByRegion;
 				Il2CppSystem.Collections.Generic.Dictionary<string, float> currentThreatCooldownByRegion = manager.m_CurrentThreatCooldownByRegion;
 				if (currentThreatLevelByRegion != null)
@@ -75,18 +85,28 @@ public static class FarTerritory
 			return cougarStateSync;
 		}
 
-		public static void Apply(DataStr.CougarStateSync state)
+		public static bool Apply(DataStr.CougarStateSync state, bool fromHost = true)
 		{
+			if (state?.m_Initialized != true) return false;
 			CougarManager manager = GetManager();
-			if (manager == null || state == null)
+			if (manager == null || manager.m_CougarTerritories == null || manager.m_CougarTerritories.Count == 0)
 			{
-				return;
+				if (fromHost && !MyMod.iAmHost) s_PendingHostSnapshot = state;
+				return false;
 			}
 			try
 			{
-				if (state.m_Enabled)
+				if (fromHost) manager.IsEnabled = state.m_Enabled;
+				if (!state.m_Enabled || !manager.IsEnabled) return fromHost;
+				bool refreshActiveTerritory = false;
+				foreach (string name in state.m_ArrivedTerritories)
 				{
-					manager.IsEnabled = true;
+					var territory = manager.FindTerritory(name);
+					if (territory == null || territory.m_CougarState >= CougarManager.CougarState.PlayingIntroTimeline) continue;
+					territory.m_CougarState = CougarManager.CougarState.HasArrived;
+					territory.m_HasTriggeredArrivalCinematic = true;
+					territory.m_NextDaysPlayedCheck = 0f;
+					refreshActiveTerritory |= territory == manager.m_ActiveTerritory;
 				}
 				Il2CppSystem.Collections.Generic.Dictionary<string, int> dictionary = manager.m_CurrentThreatLevelByRegion;
 				Il2CppSystem.Collections.Generic.Dictionary<string, float> dictionary2 = manager.m_CurrentThreatCooldownByRegion;
@@ -110,11 +130,15 @@ public static class FarTerritory
 						dictionary2[key] = state.m_ThreatCooldowns[i];
 					}
 				}
+				if (refreshActiveTerritory && !string.IsNullOrEmpty(manager.m_ActiveRegionName))
+					manager.MaybeUpdateSceneTerritoryZoneVolumes(manager.GetRegionThreatLevel(manager.m_ActiveRegionName));
 				s_LastSnapshot = Fingerprint(Capture());
+				return true;
 			}
 			catch (Exception ex)
 			{
 				MelonLogger.Warning("[TLD Coop] Could not apply the cougar state: " + ex.Message);
+				return false;
 			}
 		}
 
@@ -122,6 +146,7 @@ public static class FarTerritory
 		{
 			StringBuilder stringBuilder = new StringBuilder();
 			stringBuilder.Append(state.m_Enabled).Append('|');
+			foreach (string name in state.m_ArrivedTerritories) stringBuilder.Append(name).Append('|');
 			for (int i = 0; i < state.m_RegionNames.Count; i++)
 			{
 				stringBuilder.Append(state.m_RegionNames[i]).Append(':').Append(state.m_ThreatLevels[i])
@@ -141,7 +166,9 @@ public static class FarTerritory
 			{
 				return;
 			}
+			if (s_PendingHostSnapshot != null && Apply(s_PendingHostSnapshot)) s_PendingHostSnapshot = null;
 			DataStr.CougarStateSync cougarStateSync = Capture();
+			if (!cougarStateSync.m_Initialized) return;
 			string text = Fingerprint(cougarStateSync);
 			if (text == s_LastSnapshot)
 			{
@@ -165,7 +192,7 @@ public static class FarTerritory
 
 	public static class TraderSync
 	{
-		private static TraderManager s_Manager;
+		private static string s_PendingState;
 
 		private static float s_NextPush;
 
@@ -175,31 +202,35 @@ public static class FarTerritory
 
 		private const float PushIntervalSeconds = 5f;
 
-		public static TraderManager GetManager()
+		private static TraderManager GetReadyManager()
 		{
-			if (s_Manager == null)
-			{
-				s_Manager = UnityEngine.Object.FindObjectOfType<TraderManager>();
-			}
-			return s_Manager;
+			if (MyMod.LoadingScreenIsOn || !WildlifeSpawnAuthorityPolicy.WorldScene(MyMod.level_name)) return null;
+			return GameManager.GetTraderManager();
+		}
+
+		internal static void ResetSession()
+		{
+			s_PendingState = null;
+			s_LastPushed = "";
+			s_NextPush = 0f;
 		}
 
 		public static void OnSceneChanged()
 		{
-			s_Manager = null;
-			s_LastPushed = "";
+			if (!MyMod.InOnline()) ResetSession();
+			else s_LastPushed = "";
 		}
 
 		public static string Capture()
 		{
-			TraderManager manager = GetManager();
+			TraderManager manager = GetReadyManager();
 			if (manager == null || manager.m_CurrentState == null)
 			{
 				return "";
 			}
 			try
 			{
-				return Utils.SerializeObject(manager.m_CurrentState);
+				return Utils.SerializeObject(manager.Serialize());
 			}
 			catch (Exception ex)
 			{
@@ -210,18 +241,25 @@ public static class FarTerritory
 
 		public static void Apply(string serialized)
 		{
-			TraderManager manager = GetManager();
-			if (manager == null || string.IsNullOrEmpty(serialized))
-			{
-				return;
-			}
+			if (string.IsNullOrEmpty(serialized)) return;
+			s_PendingState = serialized;
+			ApplyPending();
+		}
+
+		private static void ApplyPending()
+		{
+			if (s_PendingState == null) return;
+			TraderManager manager = GetReadyManager();
+			if (manager == null || manager.m_CurrentState == null) return;
+			string serialized = s_PendingState;
+			s_PendingState = null;
 			try
 			{
 				s_Applying = true;
 				TraderState traderState = Utils.DeserializeObject<TraderState>(serialized);
 				if (traderState != null)
 				{
-					manager.m_CurrentState = traderState;
+					manager.Deserialize(traderState);
 					s_LastPushed = serialized;
 				}
 			}
@@ -237,9 +275,10 @@ public static class FarTerritory
 
 		public static void MaybePush()
 		{
+			ApplyPending();
 			if (MyMod.iAmHost && !s_Applying && !(Time.time < s_NextPush))
 			{
-				s_NextPush = Time.time + 5f;
+				s_NextPush = Time.time + PushIntervalSeconds;
 				string text = Capture();
 				if (!string.IsNullOrEmpty(text) && !(text == s_LastPushed))
 				{
@@ -251,6 +290,7 @@ public static class FarTerritory
 
 		public static void PushNow()
 		{
+			if (s_Applying || !MyMod.InOnline()) return;
 			string text = Capture();
 			if (string.IsNullOrEmpty(text))
 			{

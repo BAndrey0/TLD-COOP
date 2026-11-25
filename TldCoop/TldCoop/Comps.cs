@@ -51,6 +51,23 @@ public class Comps
 		public override bool PerformInteraction() => DroppedGearInteraction.PickUp(this);
 	}
 
+	public class SharedCookwareInteraction : Il2CppTLD.Interactions.SimpleInteraction
+	{
+		public SharedCookwareInteraction(IntPtr ptr) : base(ptr) { }
+
+		public override void Start() => Refresh();
+		public override void InitializeInteraction() => Refresh();
+		public override void UpdateInteraction(float deltaTime) => Refresh();
+		public override bool PerformInteraction() => ScenePlacementSync.OpenCookingActions(gameObject);
+
+		private void Refresh()
+		{
+			string label = ScenePlacementSync.CookingHover(gameObject);
+			HoverText = label ?? "";
+			m_CanInteract = label != null;
+		}
+	}
+
 	public class SpecialItemDummy : MonoBehaviour
 	{
 		public string m_LocalizedDisplayName;
@@ -3557,6 +3574,7 @@ public class Comps
 		ClassInjector.RegisterTypeInIl2Cpp<DoNotSerializeThis>();
 		ClassInjector.RegisterTypeInIl2Cpp<MultiplayerPlayerVoiceChatPlayer>();
 		ClassInjector.RegisterTypeInIl2Cpp<DroppedGearDummy>();
+		ClassInjector.RegisterTypeInIl2Cpp<SharedCookwareInteraction>();
 		ClassInjector.RegisterTypeInIl2Cpp<IgnoreDropOverride>();
 		ClassInjector.RegisterTypeInIl2Cpp<DropFakeOnLeave>();
 		ClassInjector.RegisterTypeInIl2Cpp<FakeBed>();

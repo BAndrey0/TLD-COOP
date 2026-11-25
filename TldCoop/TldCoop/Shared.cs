@@ -79,6 +79,8 @@ public class Shared
 
 		public bool m_SearchingVolunteer;
 
+		public float m_NextVolunteerRequest;
+
 		public System.Collections.Generic.List<float> m_StageDuration = new System.Collections.Generic.List<float>();
 
 		public System.Collections.Generic.List<float> m_TransitionDuration = new System.Collections.Generic.List<float>();
@@ -164,6 +166,8 @@ public class Shared
 		public void SetNewSet(DataStr.WeatherVolunteerData Data)
 		{
 			m_WaitsForUpdate = false;
+			m_SearchingVolunteer = false;
+			m_NextVolunteerRequest = 0f;
 			m_Time = 0f;
 			m_Progress = 0f;
 			m_WeatherTimeOfDayCount = 0;
@@ -185,35 +189,10 @@ public class Shared
 
 		public void AddTime(float Val)
 		{
-			if (m_WaitsForUpdate)
-			{
-				return;
-			}
-			if (m_Progress >= 1f)
-			{
-				m_WaitsForUpdate = true;
-				m_SearchingVolunteer = true;
-				m_Progress = 1f;
-				m_Time = m_Duration;
-				if (MyMod.iAmHost)
-				{
-					if (m_Region == MyMod.GetCurrentRegionIfPossible())
-					{
-						Log("WeatherSet is over, I am on same region, so going to provide weatherset for Region " + m_Region, LoggerColor.Blue);
-						RegisterWeatherSetForRegion(0, Pathes.GetWeatherVolunteerData(DoNext: true));
-					}
-					else
-					{
-						Log("WeatherSet is over, searching weather volunteer for Region " + m_Region, LoggerColor.Blue);
-						ServerSend.WEATHERVOLUNTEER(m_Region);
-					}
-				}
-			}
-			else
-			{
-				m_Time += Val;
-				m_Progress = m_Time / m_Duration;
-			}
+			if (m_WaitsForUpdate) return;
+			m_Time = Math.Min(m_Time + Val, m_Duration);
+			m_Progress = m_Time / m_Duration;
+			m_WaitsForUpdate = m_Time >= m_Duration;
 		}
 
 		public void AddTOD(int Ticks, DataStr.TimeOfDayStatus TODStatus)
@@ -671,13 +650,14 @@ public class Shared
 
 	public static void RegisterWeatherSetForRegion(int ClientID, DataStr.WeatherVolunteerData Data)
 	{
+		if (string.IsNullOrEmpty(Data.SetName) || !float.IsFinite(Data.WeatherDuration) || Data.WeatherDuration <= 0f ||
+			Data.StageDuration.Count == 0 || Data.StageDuration.Count != Data.StageTransition.Count) return;
 		foreach (RegionWeatherControler regionWeather in RegionWeathers)
 		{
 			if (regionWeather.m_Region == Data.CurrentRegion)
 			{
 				if (regionWeather.m_WaitsForUpdate)
 				{
-					regionWeather.m_SearchingVolunteer = false;
 					regionWeather.SetNewSet(Data);
 					Log("New WeatherSet for Region " + Data.CurrentRegion + " provided by Client " + ClientID, LoggerColor.Blue);
 				}
@@ -688,14 +668,23 @@ public class Shared
 		RegionWeathers.Add(new RegionWeatherControler(Data));
 	}
 
+	internal static int? GetNativeWeatherRegion()
+	{
+		if (MyMod.DedicatedServerAppMode || MyMod.LoadingScreenIsOn || !WildlifeSpawnAuthorityPolicy.WorldScene(MyMod.level_name) ||
+			GameManager.m_Weather == null || GameManager.GetUniStorm() == null ||
+			GameManager.m_WeatherTransition?.m_CurrentWeatherSet == null || GameManager.m_Weather.IsWeatherStatic()) return null;
+		var region = RegionCompat.GetCurrentRegion();
+		return region == GameRegion.RandomRegion || region == GameRegion.FutureRegion ? null : (int)region;
+	}
+
 	public static void WeatherUpdate(int Minutes = 1)
 	{
-		float num = 0.016f;
+		int? localRegion = GetNativeWeatherRegion();
 		foreach (RegionWeatherControler regionWeather in RegionWeathers)
 		{
-			if (!regionWeather.m_WaitsForUpdate && (MyMod.DedicatedServerAppMode || regionWeather.m_Region != MyMod.GetCurrentRegionIfPossible()))
+			if (!regionWeather.m_WaitsForUpdate && regionWeather.m_Region != localRegion)
 			{
-				regionWeather.AddTime(num * (float)Minutes);
+				regionWeather.AddTime(Minutes / 60f);
 				regionWeather.MayRecalculate();
 			}
 		}
@@ -703,10 +692,10 @@ public class Shared
 
 	public static void WeatherUpdateSecond()
 	{
-		int localRegion = MyMod.DedicatedServerAppMode ? -1 : MyMod.GetCurrentRegionIfPossible();
+		int? nativeRegion = GetNativeWeatherRegion();
 		var weather = GameManager.m_Weather;
 		var set = GameManager.m_WeatherTransition?.m_CurrentWeatherSet;
-		if (localRegion >= 0 && !MyMod.LoadingScreenIsOn && weather != null && GameManager.GetUniStorm() != null && set != null && set.m_CurrentSetDuration > 0f)
+		if (nativeRegion is int localRegion && set.m_CurrentSetDuration > 0f)
 		{
 			var state = Pathes.GetWeatherVolunteerData();
 			var cached = RegionWeathers.Find(entry => entry.m_Region == localRegion);
@@ -718,14 +707,28 @@ public class Shared
 			cached.m_HighTemp = weather.m_TempHigh;
 			cached.m_LowTemp = weather.m_TempLow;
 			cached.m_PreviousStage = state.PreviousStage;
+			cached.m_StageDuration = state.StageDuration;
+			cached.m_TransitionDuration = state.StageTransition;
 			int stage = set.m_CurrentIndex;
-			float elapsed = stage >= 0 && stage < set.m_WeatherStages.Length ? set.m_WeatherStages[stage].m_ElapsedTime : 0f;
-			ServerSend.DEDICATEDWEATHER(localRegion, state.WeatherType, state.SetIndex, cached.m_Progress, cached.m_WeatherSeed, state.WeatherDuration, state.StageDuration, state.StageTransition, 0, cached.m_HighTemp, cached.m_LowTemp, state.PreviousStage, state.SetName, stage, elapsed);
+			if (stage >= 0 && stage < state.StageDuration.Count)
+			{
+				float elapsed = set.m_WeatherStages[stage].m_ElapsedTime;
+				ServerSend.DEDICATEDWEATHER(localRegion, state.WeatherType, state.SetIndex, cached.m_Progress, cached.m_WeatherSeed, state.WeatherDuration, state.StageDuration, state.StageTransition, 0, cached.m_HighTemp, cached.m_LowTemp, state.PreviousStage, state.SetName, stage, elapsed);
+			}
 		}
 		foreach (RegionWeatherControler regionWeather in RegionWeathers)
 		{
-			if (regionWeather.m_Region == localRegion || regionWeather.m_WaitsForUpdate) continue;
-			regionWeather.AddTime(0.016f / 60f);
+			if (regionWeather.m_Region == nativeRegion) continue;
+			if (regionWeather.m_WaitsForUpdate)
+			{
+				if (Time.realtimeSinceStartup >= regionWeather.m_NextVolunteerRequest)
+				{
+					regionWeather.m_SearchingVolunteer = true;
+					regionWeather.m_NextVolunteerRequest = Time.realtimeSinceStartup + 5f;
+					ServerSend.WEATHERVOLUNTEER(regionWeather.m_Region);
+				}
+				continue;
+			}
 			regionWeather.AddTOD(90, CurrentTimeOfDayStatus);
 			ServerSend.DEDICATEDWEATHER(regionWeather.m_Region, regionWeather.m_WeatherType, regionWeather.m_WeatherSetIndex, regionWeather.m_Progress, regionWeather.m_WeatherSeed, regionWeather.m_Duration, regionWeather.m_StageDuration, regionWeather.m_TransitionDuration, regionWeather.m_WeatherTimeOfDayCount, regionWeather.m_HighTemp, regionWeather.m_LowTemp, regionWeather.m_PreviousStage, regionWeather.m_WeatherSetName);
 		}
