@@ -3026,41 +3026,11 @@ public class Pathes
 
 		private static bool PrefixInternal(Container c)
 		{
-			if (MyMod.InOnline() && c != null && ContainerLootSync.EnsureId(c).Length == 0) return false;
-			if (MyMod.InOnline() && !CoopContainerFlow.CanStartInteraction(c))
-			{
-				HUDMessage.AddMessage("Заканчиваем предыдущий обыск…");
-				return false;
-			}
-			if (MyMod.CrazyPatchesLogger)
-			{
-				StackTrace stackTrace = new StackTrace(new StackFrame(needFileInfo: true));
-				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
-				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
-			}
-			string guid = "";
-			if (c != null && c.gameObject != null && c.gameObject.GetComponent<ObjectGuid>() != null)
-			{
-				guid = c.gameObject.GetComponent<ObjectGuid>().Get();
-			}
-			DataStr.ContainerOpenSync containerOpenSync = new DataStr.ContainerOpenSync();
-			containerOpenSync.m_Guid = guid;
-			containerOpenSync.m_LevelID = MyMod.levelid;
-			containerOpenSync.m_LevelGUID = GameManager.m_SceneTransitionData.m_SceneSaveFilenameCurrent;
-			for (int i = 0; i < MyMod.playersData.Count; i++)
-			{
-				if (MyMod.playersData[i] != null && MyMod.playersData[i].m_Container != null)
-				{
-					DataStr.ContainerOpenSync container = MyMod.playersData[i].m_Container;
-					if (container.m_Guid == containerOpenSync.m_Guid && container.m_LevelID == MyMod.levelid && container.m_LevelGUID == MyMod.level_guid)
-					{
-						HUDMessage.AddMessage(MyMod.playersData[i].m_Name + " IS USING THIS");
-						GameAudioManager.PlayGUIError();
-						return false;
-					}
-				}
-			}
-			return true;
+			if (!MyMod.InOnline()) return true;
+			if (c == null || ContainerLootSync.EnsureId(c).Length == 0 || ContainerDoorGuard.IsBusy(c, notify: true)) return false;
+			if (CoopContainerFlow.CanStartInteraction(c)) return true;
+			HUDMessage.AddMessage("Заканчиваем предыдущий обыск…");
+			return false;
 		}
 	}
 
@@ -3881,7 +3851,21 @@ public class Pathes
 	[HarmonyPatch(typeof(Container), "BeginContainerOpen")]
 	public static class Container_UsingSyncOpen
 	{
-		public static void Postfix(Container __instance)
+		private static bool Prefix(Container __instance)
+		{
+			if (!MyMod.InOnline()) return true;
+			if (ContainerLootSync.EnsureId(__instance).Length == 0 ||
+				ContainerDoorGuard.IsBusy(__instance, notify: true) || !CoopContainerFlow.CanStartInteraction(__instance)) return false;
+			CoopContainerFlow.Prefetch(__instance);
+			return true;
+		}
+
+		private static void Postfix(Container __instance, bool __runOriginal)
+		{
+			if (__runOriginal && MyMod.iAmHost) Announce(__instance);
+		}
+
+		internal static void Announce(Container __instance)
 		{
 			if (MyMod.CrazyPatchesLogger)
 			{
@@ -3889,7 +3873,6 @@ public class Pathes
 				MelonLogger.Msg(System.ConsoleColor.Blue, "----------------------------------------------------");
 				MelonLogger.Msg(System.ConsoleColor.Gray, " Stack trace for current level: {0}", stackTrace.ToString());
 			}
-			CoopContainerFlow.Prefetch(__instance);
 			DataStr.ContainerOpenSync containerOpenSync = new DataStr.ContainerOpenSync();
 			containerOpenSync.m_LevelID = MyMod.levelid;
 			containerOpenSync.m_LevelGUID = MyMod.level_guid;

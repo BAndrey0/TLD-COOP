@@ -31,15 +31,20 @@ public static class ContainerLidState
  {
   private static void Postfix(ObjectAnim __instance,bool __runOriginal){if(__runOriginal&&MyMod.InOnline())Get(__instance);}
  }
- [HarmonyPatch(typeof(ObjectAnim),"Play")]
+ [HarmonyPatch(typeof(ObjectAnim),nameof(ObjectAnim.TryPlay))]
  private static class PlayOnce
  {
   [HarmonyPriority(Priority.First)]
-  private static bool Prefix(ObjectAnim __instance,string name)
+  private static bool Prefix(ObjectAnim __instance,string name,ref bool __result)
   {
    if(!MyMod.InOnline()||(name!="open"&&name!="close")||ContainerContentRestore.IsRestoring(__instance))return true;
    var s=Get(__instance);if(s==null)return true;
-   if(!s.gate.Start(name,__instance.IsAnimating()||(active.Contains(__instance.Pointer)&&Time.realtimeSinceStartup-s.started<.25f))){if(s.gate.Queued!=null)active.Add(__instance.Pointer);return false;}
+   if(!s.gate.Start(name,__instance.IsAnimating()||(active.Contains(__instance.Pointer)&&Time.realtimeSinceStartup-s.started<.25f)))
+   {
+    if(s.gate.Queued!=null)active.Add(__instance.Pointer);
+    __result=false;
+    return false;
+   }
    if(name=="open"){s.target.localPosition=s.closedPosition;s.target.localRotation=s.closedRotation;}
    else if(s.openKnown){s.target.localPosition=s.openPosition;s.target.localRotation=s.openRotation;}
    s.started=Time.realtimeSinceStartup;active.Add(__instance.Pointer);return true;
@@ -56,7 +61,7 @@ public static class ContainerLidState
    if(s.gate.Current=="close"){s.target.localPosition=s.closedPosition;s.target.localRotation=s.closedRotation;}
    else if(!s.openKnown){s.openPosition=s.target.localPosition;s.openRotation=s.target.localRotation;s.openKnown=true;}
    else{s.target.localPosition=s.openPosition;s.target.localRotation=s.openRotation;}
-   active.Remove(ptr);string queued=s.gate.Complete();if(queued!=null)s.anim.Play(queued);
+   active.Remove(ptr);string queued=s.gate.Complete();if(queued!=null)s.anim.TryPlay(queued);
   }
   if(states.Count>256)foreach(var ptr in new List<IntPtr>(states.Keys))if(states[ptr].anim==null)states.Remove(ptr);
  }

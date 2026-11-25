@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using GameServer;
 using HarmonyLib;
 using Il2Cpp;
@@ -30,6 +31,7 @@ public static class CoopContainerFlow
 	private static Container presentation;
 
 	private static Container reopen;
+	private static Container closingWithoutOpening;
 
 	private static string scene;
 	internal static string Lease { get; private set; }
@@ -39,6 +41,7 @@ public static class CoopContainerFlow
 	private static bool ready;
 
 	private static bool activated;
+	private static bool deferredOpen;
 
 	private static bool finishRequested;
 
@@ -80,8 +83,6 @@ public static class CoopContainerFlow
 
 	public static bool CanStartInteraction(Container box)
 	{
-		if (MyMod.iAmHost && box != null &&
-			ContainerLootSync.ReservedByGuest(MyMod.level_guid, box.GetComponent<ObjectGuid>()?.Get())) return false;
 		if (!MyMod.SaveExitPending && !CoopReturnToMenu.InProgress && !ContainerLootSync.HasPendingUpload && presentation == null)
 		{
 			if (!(request == null))
@@ -136,6 +137,7 @@ public static class CoopContainerFlow
 			buffered = null;
 			ready = false;
 			activated = false;
+			deferredOpen = false;
 			started = Clock.Elapsed.TotalSeconds;
 			deadline = started + 30.0;
 			MyMod.GoingToOpenContinaer = box;
@@ -204,6 +206,12 @@ public static class CoopContainerFlow
 		}
 		buffered = data;
 		ready = true;
+		if (deferredOpen)
+		{
+			deferredOpen = false;
+			request.PlayAnimation("open");
+		}
+		Pathes.Container_UsingSyncOpen.Announce(request);
 		if (MyMod.LastPacketForRepeat == MyMod.ResendPacketType.Container)
 		{
 			MyMod.DiscardRepeatPacket();
@@ -214,6 +222,18 @@ public static class CoopContainerFlow
 			Deliver();
 		}
 		return true;
+	}
+
+	[HarmonyPatch(typeof(Container), nameof(Container.PlayAnimation))]
+	private static class OpenAfterGrant
+	{
+		private static bool Prefix(Container __instance, string animation)
+		{
+			if (animation == "close" && __instance == closingWithoutOpening) return false;
+			if (animation != "open" || __instance != request || ready) return true;
+			deferredOpen = true;
+			return false;
+		}
 	}
 
 	private static void Deliver()
@@ -291,8 +311,8 @@ public static class CoopContainerFlow
 		if (box != null) box.StopSearchAudio();
 		if (request == box && !activated)
 		{
-			ClearRequest();
-			return false;
+			CancelPending(failed: false);
+			return true;
 		}
 		if (!IsPresenting(box))
 		{
@@ -385,6 +405,7 @@ public static class CoopContainerFlow
 	private static void CancelPending(bool failed)
 	{
 		Container container = request;
+		bool neverOpened = deferredOpen;
 		ClearRequest();
 		if (container != null)
 		{
@@ -398,7 +419,9 @@ public static class CoopContainerFlow
 				playerManagerComponent.SetControlMode(PlayerControlMode.Normal);
 			}
 			GameCompat.Panel<Panel_HUD>()?.CancelItemProgressBar();
-			container.BeginContainerClose();
+			if (neverOpened) closingWithoutOpening = container;
+			try { container.BeginContainerClose(); }
+			finally { closingWithoutOpening = null; }
 		}
 		if (failed)
 		{
@@ -428,18 +451,18 @@ public static class CoopContainerFlow
 		buffered = null;
 		ready = false;
 		activated = false;
+		deferredOpen = false;
 		if (MyMod.LastPacketForRepeat == MyMod.ResendPacketType.Container)
 		{
 			MyMod.DiscardRepeatPacket();
 		}
 	}
 
-	public static void Rejected(Container box)
+	public static bool Rejected(Container box)
 	{
-		if (request == box)
-		{
-			ClearRequest();
-		}
+		if (request == null || request != box) return false;
+		CancelPending(failed: false);
+		return true;
 	}
 
 	public static void RetryCorrupted(string packetScene, string guid)
@@ -464,7 +487,32 @@ public static class CoopContainerFlow
 		Lease = null;
 		buffered = null;
 		ready = (activated = (finishRequested = false));
+		deferredOpen = false;
 		legacyInputThroughFrame = -1;
+	}
+
+	internal static void ProbeDeniedDoor(System.Action<bool, string> check)
+	{
+		var box = UnityEngine.Object.FindObjectsOfType<Container>()
+			.FirstOrDefault(candidate => candidate.m_ObjectAnims != null && candidate.m_ObjectAnims.Count > 0 &&
+				candidate.m_ObjectAnims[0]?.m_Target != null && !candidate.IsPlayingAnimation());
+		check(box != null, "fixture has a native container with a door");
+		var target = box.m_ObjectAnims[0].m_Target.transform;
+		var closedPosition = target.localPosition;
+		var closedRotation = target.localRotation;
+		for (int attempt = 0; attempt < 3; attempt++)
+		{
+			request = box;
+			box.PlayAnimation("open");
+			check(deferredOpen && !box.m_IsAnimating, $"guest door stays closed before grant {attempt + 1}");
+			check(Rejected(box) && request == null && !deferredOpen &&
+				(target.localPosition - closedPosition).sqrMagnitude < .000001f && Quaternion.Angle(target.localRotation, closedRotation) < .01f,
+				$"denial clears the pending search without moving the door {attempt + 1}");
+		}
+		request = box;
+		box.PlayAnimation("open");
+		check(BufferReply("") && ready && !deferredOpen && box.m_IsAnimating, "a granted search starts the native door animation");
+		CancelPending(failed: false);
 	}
 
 	public static void Draw()

@@ -731,6 +731,14 @@ internal static class ScenePlacementSync
         foreach (var move in moves.Values) revision = Math.Max(revision, move.Revision);
         Saved.Add(area, moves);
         StoredFurniture.Add(area, FurnitureContainerIndex.Load(MPSaveManager.GetPathForName("", seed), area));
+        var retired = RetireLegacyCrockeryCopies(moves, moves.Values.Where(move => move.Removed).ToArray());
+        if (retired.Count > 0)
+        {
+            MPSaveManager.ValidateRootExits();
+            if (!MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(moves), seed))
+                foreach (var original in retired) moves[original.Id] = original;
+            else MelonLoader.MelonLogger.Msg($"[Furniture] Retired {retired.Count} legacy crockery copies in {area}");
+        }
         ReconcileContainerFurniture(area, notify: false);
         return moves;
     }
@@ -821,7 +829,10 @@ internal static class ScenePlacementSync
             Move previous = existing;
             if (previous == null && !string.IsNullOrEmpty(move.PreviousId))
                 moves.TryGetValue(move.PreviousId, out previous);
-            if (!FurnitureReplicationPolicy.CanCommit(move.BaseRevision, previous?.Revision ?? 0))
+            bool destroysSameItem = move.Removed && existing != null && !existing.Removed &&
+                move.BaseRevision >= 0 && move.BaseRevision < existing.Revision &&
+                move.Anchor == existing.Anchor && move.Asset == existing.Asset;
+            if (!destroysSameItem && !FurnitureReplicationPolicy.CanCommit(move.BaseRevision, previous?.Revision ?? 0))
             {
                 MelonLoader.MelonLogger.Msg($"[Furniture] Rejected stale move scene={area} id={move.Id} player={sender} expected={move.BaseRevision} actual={previous?.Revision ?? 0}");
                 if (previous != null)
@@ -856,6 +867,7 @@ internal static class ScenePlacementSync
                     next[child.Id] = child with { Parent = move.Id, Revision = move.Revision };
             }
             next[move.Id] = move;
+            var retiredCrockery = move.Removed ? RetireLegacyCrockeryCopies(next, new[] { move }) : null;
             MPSaveManager.ValidateRootExits();
             if (!MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(next), MPSaveManager.GetSeed())) return;
             Saved[area] = next;
@@ -878,6 +890,12 @@ internal static class ScenePlacementSync
             }
             ReceiveMove(area, move);
             SendToPeers(1, area, JsonSerializer.Serialize(move));
+            if (retiredCrockery != null)
+                foreach (var original in retiredCrockery)
+                {
+                    ReceiveMove(area, next[original.Id]);
+                    SendToPeers(1, area, JsonSerializer.Serialize(next[original.Id]));
+                }
         }
         AckMove(sender, area, move.Operation);
     }
@@ -923,7 +941,7 @@ internal static class ScenePlacementSync
 
     private static Pose[] FurnitureHistory(Move move, Move previous)
     {
-        if (move.Removed || string.IsNullOrEmpty(move.Asset)) return null;
+        if (string.IsNullOrEmpty(move.Asset)) return null;
         if (previous == null)
             return move.Origin?.Valid == true && !SameFurniturePose(move.Origin, move.Pose) ? new[] { move.Origin } : null;
         if (previous.Removed || previous.Asset != move.Asset) return null;
@@ -934,6 +952,37 @@ internal static class ScenePlacementSync
         // Preserve the initial position as well as the most recent positions for returning players.
         return poses.Count <= FurnitureHistoryLimit ? poses.ToArray() :
             poses.Take(FurnitureHistoryLimit - 1).Append(poses[^1]).ToArray();
+    }
+
+    private static bool IsLegacyCrockery(Move move) => string.IsNullOrEmpty(move.Anchor) &&
+        !string.IsNullOrEmpty(move.Asset) && move.AssetName != null &&
+        (move.AssetName.StartsWith("OBJ_Dish", StringComparison.Ordinal) || move.AssetName.StartsWith("OBJ_Cup", StringComparison.Ordinal));
+
+    private static bool SameCrockeryPose(Pose left, Pose right) => left?.Valid == true && right?.Valid == true &&
+        (left.Position - right.Position).sqrMagnitude <= .000004f &&
+        Mathf.Abs(Quaternion.Dot(left.Rotation, right.Rotation)) >= .999999f;
+
+    private static List<Move> RetireLegacyCrockeryCopies(Dictionary<string, Move> moves, IEnumerable<Move> removals)
+    {
+        var retired = new List<Move>();
+        var byAsset = moves.Values.Where(move => IsLegacyCrockery(move) && !move.Stored && !move.Removed &&
+            !string.IsNullOrEmpty(move.Parent) && move.History?.Length > 0).ToLookup(move => move.Asset);
+        foreach (var removal in removals.Where(IsLegacyCrockery).OrderByDescending(move => move.Revision))
+        {
+            // Old versions assigned a new ID on every move of the same shelf. A current overlap alone
+            // is ambiguous. Require two copies on the same shelf with the same prior and current poses.
+            var matches = byAsset[removal.Asset].Where(move => move.Revision < removal.Revision &&
+                !moves[move.Id].Removed && SameCrockeryPose(move.Pose, removal.Pose)).ToArray();
+            foreach (var match in matches)
+            {
+                if (!matches.Any(other => other.Id != match.Id && other.Parent == match.Parent &&
+                    match.History.Any(pose => other.History.Any(prior => SameCrockeryPose(pose, prior))))) continue;
+                retired.Add(match);
+                moves[match.Id] = match with { Removed = true, Revision = removal.Revision, Parent = "",
+                    ParentAnchor = "", Visible = "", Relative = null };
+            }
+        }
+        return retired;
     }
 
     private static int QueuedParentDepth(Move move)
@@ -1000,7 +1049,9 @@ internal static class ScenePlacementSync
                 removedDecoration.RemoveFromHierarchy();
                 furnitureSectorsDirty = true;
             }
-            obj.SetActive(false);
+            if (move.Removed && obj.GetComponent<Placeable>() is { } removedPlacement)
+                removedPlacement.RemoveIfValid();
+            if (obj != null) obj.SetActive(false);
             return true;
         }
         if (obj == null && !string.IsNullOrEmpty(move.Asset))
@@ -1197,6 +1248,55 @@ internal static class ScenePlacementSync
                 Find(move.Id, move.Anchor, lookup) == obj && Apply(move, lookup);
         }
         return false;
+    }
+
+    internal static void ProbeCrockeryRemoval(Action<bool, string> check)
+    {
+        string area = MyMod.level_guid;
+        const string bowl = "4602b9daf60145a499af4a844f128f38";
+        var pose = Pose.From(GameManager.GetPlayerTransform()) with { Y = GameManager.GetPlayerTransform().position.y + 1f };
+        var prior = pose with { X = pose.X + 1f };
+        var parent = Guid.NewGuid().ToString("D");
+        Move NewMove(Pose at) => new(Guid.NewGuid().ToString("D"), "", at, Guid.NewGuid().ToString("N"), 0, 2,
+            Asset: bowl, AssetName: "OBJ_DishBowlA2_Prefab (PLACED)", BaseRevision: 0);
+
+        var source = NewMove(pose);
+        AcceptMove(area, source);
+        var before = GetScene(area)[source.Id];
+        check(Apply(before, new PlacementLookup()), "native bowl is materialized from the scene journal");
+        var bowlObject = Find(before.Id);
+        var breakdown = bowlObject?.GetComponentInChildren<BreakDown>();
+        check(breakdown != null, "bowl has the native breakdown interaction");
+
+        var move = before with { Operation = Guid.NewGuid().ToString("N"), BaseRevision = before.Revision,
+            Pose = pose with { X = pose.X - .2f } };
+        AcceptMove(area, move);
+        var moved = GetScene(area)[source.Id];
+        check(moved.Revision > before.Revision && Apply(moved, new PlacementLookup()), "bowl can move before destruction");
+        breakdown.DoBreakDown(false);
+        check(GetScene(area)[source.Id].Removed, "native breakdown records permanent removal");
+
+        var oldCopies = new Dictionary<string, Move>(GetScene(area), StringComparer.Ordinal);
+        var removal = GetScene(area)[source.Id];
+        var first = NewMove(removal.Pose) with { Parent = parent, History = new[] { prior }, Revision = removal.Revision - 1 };
+        var second = first with { Id = Guid.NewGuid().ToString("D") };
+        var neighbor = NewMove(removal.Pose with { X = removal.Pose.X + .08f }) with
+            { Parent = parent, History = new[] { prior }, Revision = removal.Revision - 1 };
+        var singleOverlap = NewMove(removal.Pose) with { Parent = parent,
+            History = new[] { prior with { X = prior.X + .3f } }, Revision = removal.Revision - 1 };
+        foreach (var moveRecord in new[] { first, second, neighbor, singleOverlap }) oldCopies[moveRecord.Id] = moveRecord;
+        check(MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(oldCopies), MPSaveManager.GetSeed()),
+            "legacy bowl copies are saved in the fixture");
+
+        Saved.Remove(area);
+        StoredFurniture.Remove(area);
+        var reloaded = GetScene(area);
+        check(reloaded[source.Id].Removed && reloaded[first.Id].Removed && reloaded[second.Id].Removed,
+            "reloading the room keeps destruction and retires both confirmed copies");
+        check(!reloaded[neighbor.Id].Removed && !reloaded[singleOverlap.Id].Removed,
+            "another position and a single ambiguous overlap are preserved");
+        AcceptMove(area, moved with { Operation = Guid.NewGuid().ToString("N"), BaseRevision = moved.Revision });
+        check(GetScene(area)[source.Id].Removed, "delayed placement cannot revive a destroyed bowl");
     }
 
     internal static void ProbeFurnitureInCurrentRoom()

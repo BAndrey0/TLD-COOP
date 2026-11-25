@@ -790,11 +790,31 @@ public static class SelfTest
 				MelonLogger.Msg("[Cooking QA] PASS " + message);
 			}
 			ScenePlacementSync.ProbeFurnitureContainer(Check);
+			ScenePlacementSync.ProbeCrockeryRemoval(Check);
+			CoopContainerFlow.ProbeDeniedDoor(Check);
 			MyMod.ProbeDroppedFish(Check);
 			ScenePlacementSync.ProbeCookingAndBooks();
-			var autoWalk = Il2CppRewired.ReInput.mapping.GetAction(100);
-			if (autoWalk?.name != "AutoWalk") throw new InvalidOperationException($"Input action 100 is still mapped to {autoWalk?.name}.");
-			MelonLogger.Msg("[Cooking QA] PASS native input action 100 is AutoWalk");
+			var input = InputManager.m_InputSystem;
+			var autoWalk = Il2CppRewired.ReInput.mapping.GetAction("AutoWalk");
+			Check(autoWalk != null && input.m_ActionToActionId.ContainsKey(InputManager.InputAction.AutoWalk) &&
+				input.m_ActionToActionId[InputManager.InputAction.AutoWalk] == autoWalk.id, "gameplay routes AutoWalk to the registered action");
+			string binding = input.GetButtonNameForAction(InputManager.ControllerType.Keyboard, "AutoWalk", false);
+			Check(!string.IsNullOrWhiteSpace(binding), $"AutoWalk has a keyboard binding ({binding})");
+			var movement = GameManager.GetVpFPSPlayer();
+			var settings = GameCompat.Panel<Panel_OptionsMenu>().State;
+			bool originalAutoWalk = settings.m_AutoWalkEnabled;
+			try
+			{
+				settings.m_AutoWalkEnabled = false;
+				movement.SetAutoWalkingEnabled(true);
+				Check(!movement.m_AutoWalking, "gameplay honors the disabled AutoWalk setting");
+				settings.m_AutoWalkEnabled = true;
+				movement.SetAutoWalkingEnabled(true);
+				Check(movement.m_AutoWalking && movement.GetMovementInput().y > .9f, "native auto-walk supplies forward movement when enabled");
+				movement.SetAutoWalkingEnabled(false);
+				Check(!movement.m_AutoWalking, "native auto-walk can be turned off again");
+			}
+			finally { settings.m_AutoWalkEnabled = originalAutoWalk; }
 			MelonLogger.Msg("[Cooking QA] PASS complete");
 		}
 		finally

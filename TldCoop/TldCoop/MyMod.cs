@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.44";
+		public const string Version = "0.16.45";
 
 		public const string DownloadLink = null;
 
@@ -6896,7 +6896,8 @@ public class MyMod : MelonMod
 						var unopened = meshSwap.m_MeshObjUnopened;
 						var opened = meshSwap.m_MeshObjOpened;
 						var cookingReady = meshSwap.m_MeshObjCookingReady;
-						var visibleMesh = extra.m_Variant == 1 ? opened : unopened;
+						var visibleMesh = extra.m_Variant == 1 ? opened ?? unopened : unopened ?? opened;
+						visibleMesh ??= cookingReady;
 						if (visibleMesh != null)
 						{
 							unopened?.SetActive(unopened == visibleMesh);
@@ -7035,17 +7036,33 @@ public class MyMod : MelonMod
 	internal static void ProbeDroppedFish(System.Action<bool, string> check)
 	{
 		var player = GameManager.GetPlayerTransform();
-		for (int variant = 0; variant <= 1; variant++)
+		int key = -6510703;
+		foreach (string kind in new[] { "Burbot", "CohoSalmon", "Goldeye", "LakeWhiteFish", "RainbowTrout", "Rockfish", "SmallMouthBass" })
 		{
-			int key = -6510703 - variant;
-			FakeDropItem(0, player.position, Quaternion.identity, key,
-				new DataStr.ExtraDataForDroppedGear { m_GearName = "GEAR_RawLakeWhiteFish", m_Variant = variant });
-			var replica = DroppedGearsObjs[key];
-			var swap = replica.GetComponent<MeshSwapItem>();
-			check(swap != null && swap.m_MeshObjUnopened.activeSelf == (variant == 0) &&
-				swap.m_MeshObjOpened.activeSelf == (variant == 1) && !swap.m_MeshObjCookingReady.activeSelf,
-				$"whitefish replica keeps one mesh for variant {variant}");
-			PickDroppedItem(key, 0);
+			foreach (string form in new[] { "Raw", "Cooked" })
+			{
+				string name = "GEAR_" + form + kind;
+				int lastVariant = form == "Raw" ? 1 : 0;
+				for (int variant = 0; variant <= lastVariant; variant++, key--)
+				{
+					FakeDropItem(0, player.position, Quaternion.identity, key,
+						new DataStr.ExtraDataForDroppedGear { m_GearName = name, m_Variant = variant });
+					check(DroppedGearsObjs.TryGetValue(key, out var replica) && replica != null, $"{name} dropped replica spawned for variant {variant}");
+					try
+					{
+						var meshes = replica.GetComponent<MeshSwapItem>();
+						if (meshes != null)
+						{
+							var alternatives = new[] { meshes.m_MeshObjUnopened, meshes.m_MeshObjOpened, meshes.m_MeshObjCookingReady };
+							var expected = alternatives[variant] ?? alternatives[1 - variant] ?? alternatives[2];
+							check(expected != null && expected.activeInHierarchy && alternatives.Where(mesh => mesh != null)
+								.All(mesh => mesh.activeSelf == (mesh == expected)), $"{name} displays one model for variant {variant}");
+						}
+						else check(replica.GetComponentsInChildren<MeshRenderer>().Any(mesh => mesh.enabled), $"{name} displays its mesh");
+					}
+					finally { PickDroppedItem(key, 0); }
+				}
+			}
 		}
 	}
 

@@ -247,7 +247,11 @@ public static class ContainerLootSync
 		if (MatchesPending(scene, guid))
 		{
 			Container goingToOpenContinaer = MyMod.GoingToOpenContinaer;
-			CoopContainerFlow.Rejected(goingToOpenContinaer);
+			if (CoopContainerFlow.Rejected(goingToOpenContinaer))
+			{
+				HUDMessage.AddMessage("Контейнер уже осматривают");
+				return;
+			}
 			MyMod.GoingToOpenContinaer = null;
 			if (MyMod.LastPacketForRepeat == MyMod.ResendPacketType.Container)
 			{

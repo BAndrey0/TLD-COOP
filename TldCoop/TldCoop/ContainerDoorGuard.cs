@@ -1,4 +1,3 @@
-using System;
 using GameServer;
 using HarmonyLib;
 using Il2Cpp;
@@ -22,14 +21,10 @@ public static class ContainerDoorGuard
 				{
 					return true;
 				}
-				Container container = ContainerOf(__instance);
-				string user = (container != null) ? OtherUser(container) : null;
-				if (user == null)
+				if (!IsBusy(ContainerOf(__instance), notify: true))
 				{
 					return true;
 				}
-				HUDMessage.AddMessage(user + " IS USING THIS");
-				GameAudioManager.PlayGUIError();
 				__result = false;
 				return false;
 			}
@@ -64,14 +59,11 @@ public static class ContainerDoorGuard
 		return container;
 	}
 
-	private static string OtherUser(Container container)
+	internal static bool IsBusy(Container container, bool notify)
 	{
-		ObjectGuid guid = container.GetComponent<ObjectGuid>();
-		if (guid == null)
-		{
-			return null;
-		}
-		string id = guid.Get();
+		if (!MyMod.InOnline() || container == null) return false;
+		string id = container.GetComponent<ObjectGuid>()?.Get();
+		if (string.IsNullOrEmpty(id)) return false;
 		for (int i = 0; i < MyMod.playersData.Count; i++)
 		{
 			if (i == ClientUser.myId)
@@ -81,9 +73,18 @@ public static class ContainerDoorGuard
 			DataStr.ContainerOpenSync open = MyMod.playersData[i]?.m_Container;
 			if (open != null && open.m_Guid == id && open.m_LevelGUID == MyMod.level_guid)
 			{
-				return MyMod.playersData[i].m_Name;
+				if (notify) NotifyBusy();
+				return true;
 			}
 		}
-		return null;
+		if (!MyMod.iAmHost || !ContainerLootSync.ReservedByGuest(MyMod.level_guid, id)) return false;
+		if (notify) NotifyBusy();
+		return true;
+	}
+
+	private static void NotifyBusy()
+	{
+		HUDMessage.AddMessage("Контейнер уже осматривают");
+		GameAudioManager.PlayGUIError();
 	}
 }
