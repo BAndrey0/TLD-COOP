@@ -55,13 +55,16 @@ public class Comps
 	{
 		public SharedCookwareInteraction(IntPtr ptr) : base(ptr) { }
 
+		public override bool IsEnabled => this != null && isActiveAndEnabled;
+		public override GameObject GetInteractiveObject() => IsEnabled ? gameObject : null;
 		public override void Start() => Refresh();
 		public override void InitializeInteraction() => Refresh();
 		public override void UpdateInteraction(float deltaTime) => Refresh();
-		public override bool PerformInteraction() => ScenePlacementSync.OpenCookingActions(gameObject);
+		public override bool PerformInteraction() => IsEnabled && ScenePlacementSync.OpenCookingActions(gameObject);
 
 		private void Refresh()
 		{
+			if (!IsEnabled) return;
 			string label = ScenePlacementSync.CookingHover(gameObject);
 			HoverText = label ?? "";
 			m_CanInteract = label != null;

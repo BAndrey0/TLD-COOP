@@ -784,6 +784,13 @@ public static class SelfTest
 			});
 			using (probe as IDisposable)
 				while (probe.MoveNext()) yield return probe.Current;
+			void Check(bool passed, string message)
+			{
+				if (!passed) throw new InvalidOperationException(message);
+				MelonLogger.Msg("[Cooking QA] PASS " + message);
+			}
+			ScenePlacementSync.ProbeFurnitureContainer(Check);
+			MyMod.ProbeDroppedFish(Check);
 			ScenePlacementSync.ProbeCookingAndBooks();
 			var autoWalk = Il2CppRewired.ReInput.mapping.GetAction(100);
 			if (autoWalk?.name != "AutoWalk") throw new InvalidOperationException($"Input action 100 is still mapped to {autoWalk?.name}.");

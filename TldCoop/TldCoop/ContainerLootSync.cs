@@ -2,6 +2,7 @@ using System;
 using System.Text;
 using GameServer;
 using Il2Cpp;
+using Il2CppTLD.Placement;
 using MelonLoader;
 
 namespace TldCoop;
@@ -126,7 +127,7 @@ public static class ContainerLootSync
 		if (closeUpload && container != null && openScene == MyMod.level_guid)
 		{
 			bool empty = container.IsEmpty();
-			container.DestroyAllGear();
+			ClearContents(container);
 			var sync = container.GetComponent<Comps.ContainersSync>();
 			if (sync != null) sync.m_Empty = empty;
 			container.BeginContainerClose();
@@ -272,7 +273,7 @@ public static class ContainerLootSync
 			box.PopulateContents();
 		}
 		box.InstantiateContents();
-		string text = box.Serialize();
+		string text = SerializeContents(box);
 		MelonLogger.Msg("[Container loot] Native snapshot guid=" + box.GetComponent<ObjectGuid>()?.Get() + " items=" + box.m_Items.Count);
 		string text2 = Shared.CompressString(text);
 		if (Encoding.UTF8.GetByteCount(text2) > 48000)
@@ -280,6 +281,65 @@ public static class ContainerLootSync
 			throw new InvalidOperationException("Initial container snapshot exceeds safe packet size");
 		}
 		return text2;
+	}
+
+	internal static string SerializeContents(Container box)
+	{
+		string json = box.Serialize();
+		if (!MyMod.InOnline() || box.m_DecorationItems?.Count is not > 0) return json;
+		var snapshot = Utils.DeserializeObject<ContainerSaveDataProxy>(json);
+		var decorations = snapshot?.m_SerializedDecorationItems;
+		if (decorations == null) return json;
+		bool changed = false;
+		var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		for (int i = 0; i < decorations.Count;)
+		{
+			var item = decorations[i];
+			if (item == null || string.IsNullOrEmpty(item.m_GUID)) { i++; continue; }
+			string id = ScenePlacementSync.CanonicalFurnitureId(MyMod.level_guid, item.m_GUID);
+			if (!seen.Add(id))
+			{
+				decorations.RemoveAt(i);
+				changed = true;
+				continue;
+			}
+			if (id != item.m_GUID)
+			{
+				item.m_GUID = id;
+				changed = true;
+			}
+			i++;
+		}
+		return changed ? Utils.SerializeObject(snapshot) : json;
+	}
+
+	internal static void RestoreContents(Container box, string json)
+	{
+		using var restore = new ContainerContentRestore(box);
+		ClearContents(box);
+		if (!string.IsNullOrEmpty(json))
+			box.Deserialize(json, new Il2CppSystem.Collections.Generic.List<GearItem>());
+	}
+
+	internal static void ClearContents(Container box)
+	{
+		box.DestroyAllGear();
+		var decorations = box.m_DecorationItems;
+		if (decorations == null) return;
+		for (int i = decorations.Count - 1; i >= 0; i--)
+		{
+			var item = decorations[i];
+			if (item == null) { decorations.RemoveAt(i); continue; }
+			var placeable = item.GetComponent<Placeable>();
+			box.DestroyDecoration(item);
+			if (placeable != null)
+			{
+				// Discard the local presentation before the same GUID is
+				// materialized by a later authoritative snapshot.
+				placeable.RemoveIfValid();
+				placeable.Invalidate();
+			}
+		}
 	}
 
 	public static string GetOrInitialize(string scene, string guid, string initial)

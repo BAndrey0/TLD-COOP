@@ -6,6 +6,7 @@ using GameServer;
 using HarmonyLib;
 using Il2Cpp;
 using Il2CppTLD.IntBackedUnit;
+using Il2CppTLD.Interactions;
 using Il2CppTLD.Placement;
 using Il2CppTLD.UI.Scroll;
 using UnityEngine;
@@ -55,7 +56,9 @@ internal static class ScenePlacementSync
     }
 
     private const int FurnitureHistoryLimit = 6;
-    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false, bool Removed = false, string Visible = "", string PreviousId = "", Pose[] History = null, long BaseRevision = -1, Pose Origin = null);
+    private sealed record Move(string Id, string Parent, Pose Pose, string Operation, long Revision, int Version = 0, string Anchor = "", string ParentAnchor = "", string Asset = "", string AssetName = "", float Sx = 1f, float Sy = 1f, float Sz = 1f, bool RegisterOnly = false, bool Removed = false, string Visible = "", string PreviousId = "", Pose[] History = null, long BaseRevision = -1, Pose Origin = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] Pose Relative = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Stored = false);
     private sealed class FurniturePlacement
     {
         internal GameObject Object;
@@ -90,6 +93,7 @@ internal static class ScenePlacementSync
     private static readonly Dictionary<Guid, float> ReceivedOutputs = new();
     private sealed record RemotePot(Pot State, GameObject Visual, Collider[] Hitboxes, float Expires);
     private static readonly Dictionary<string, Dictionary<string, Move>> Saved = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, FurnitureContainerIndex> StoredFurniture = new(StringComparer.Ordinal);
     // LoadData migrates old Unity vectors by lowercasing X, Y and Z before returning JSON.
     private static readonly JsonSerializerOptions FurnitureSaveOptions = new() { PropertyNameCaseInsensitive = true };
     private static readonly Dictionary<(string Area, string Id), (Move Move, float SentAt)> Pending = new();
@@ -102,6 +106,7 @@ internal static class ScenePlacementSync
     private static long placementRevision;
     private static readonly Dictionary<string, Move> Unapplied = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, long> LatestRevision = new(StringComparer.Ordinal);
+    private static readonly HashSet<string> RemovedFurniture = new(StringComparer.Ordinal);
     private static readonly HashSet<string> AcceptedOperations = new(StringComparer.Ordinal);
     private static readonly Queue<string> OperationOrder = new();
     private static readonly Dictionary<int, CookingPotItem> LocalPots = new();
@@ -146,6 +151,7 @@ internal static class ScenePlacementSync
         if (obj == null) return "";
         foreach (var alias in FurnitureAliases)
             if (alias.Value == obj) return alias.Key;
+        if (OriginalDecoration(obj) is { } original) return original.Id;
         var placeable = obj.GetComponent<Placeable>();
         if (placeable != null && !string.IsNullOrEmpty(placeable.m_Guid) && placeable.m_Addressable != null)
         {
@@ -157,8 +163,7 @@ internal static class ScenePlacementSync
         string persistent = obj.GetComponent<ObjectGuid>()?.Get() ?? "";
         if (persistent.Length > 0) return persistent;
         if (placeable != null && !string.IsNullOrEmpty(placeable.m_Guid)) return placeable.m_Guid;
-        string anchor = Anchor(obj);
-        return anchor.Length == 0 ? "" : "anchor-" + anchor;
+        return "";
     }
 
     internal static string FurnitureIdentity(GameObject obj)
@@ -169,31 +174,52 @@ internal static class ScenePlacementSync
         return Id(decoration != null ? decoration.gameObject : obj);
     }
 
-    private static string Anchor(GameObject obj)
+    internal static string CanonicalFurnitureId(string area, string nativeId)
     {
-        var decoration = obj != null ? obj.GetComponent<DecorationItem>() : null;
-        return decoration != null && OriginalAnchors.TryGetValue(decoration.GetInstanceID(), out string key) ? key : "";
+        foreach (var binding in NativeFurnitureIds)
+            if (binding.Key.Area == area && binding.Value == nativeId) return binding.Key.Id;
+        return nativeId;
     }
 
-    private static readonly Dictionary<int, string> OriginalAnchors = new();
+    private sealed record NativeDecoration(DecorationItem Item, string Id, string Anchor, Pose Origin);
+    private static readonly Dictionary<int, NativeDecoration> OriginalDecorations = new();
+    private static readonly HashSet<int> ConfirmedNativeDecorations = new();
+    private static int nativeConfirmationFrame = -1;
+
+    private static NativeDecoration OriginalDecoration(GameObject obj)
+    {
+        var decoration = obj != null ? obj.GetComponent<DecorationItem>() : null;
+        return decoration != null ? OriginalDecorations.GetValueOrDefault(decoration.GetInstanceID()) : null;
+    }
+
+    private static string Anchor(GameObject obj) => OriginalDecoration(obj)?.Anchor ?? "";
+
+    private static bool NativePlacementConfirmed(GameObject obj) => obj != null &&
+        nativeConfirmationFrame == Time.frameCount && ConfirmedNativeDecorations.Contains(obj.GetInstanceID());
 
     [HarmonyPatch(typeof(DecorationItem), nameof(DecorationItem.Awake))]
     private static class RememberOriginalFurniture
     {
         private static void Prefix(DecorationItem __instance)
         {
-            var position = __instance.transform.position;
-            if (!__instance.gameObject.scene.IsValid() || position == Vector3.zero) return;
+            var obj = __instance.gameObject;
+            string name = obj.name;
+            if (creatingReplica || !obj.scene.IsValid() || name.Contains("(Clone)", StringComparison.Ordinal) ||
+                name.EndsWith(" (PLACED)", StringComparison.Ordinal)) return;
+            var pose = Pose.From(obj.transform);
             string identity = FormattableString.Invariant(
-                $"{GameCompat.StripCloneSuffix(__instance.name)}|{position.x:F2}|{position.y:F2}|{position.z:F2}");
-            OriginalAnchors[__instance.GetInstanceID()] = Shared.StableHash(identity).ToString("X8");
+                $"{name.Trim()}|{pose.X:F2}|{pose.Y:F2}|{pose.Z:F2}");
+            string anchor = Shared.StableHash(identity).ToString("X8");
+            string id = obj.GetComponent<ObjectGuid>()?.Get();
+            OriginalDecorations[__instance.GetInstanceID()] = new(__instance,
+                string.IsNullOrEmpty(id) ? "anchor-" + anchor : id, anchor, pose);
         }
     }
 
     [HarmonyPatch(typeof(DecorationItem), nameof(DecorationItem.OnDestroy))]
     private static class ForgetFurnitureAnchor
     {
-        private static void Prefix(DecorationItem __instance) => OriginalAnchors.Remove(__instance.GetInstanceID());
+        private static void Prefix(DecorationItem __instance) => OriginalDecorations.Remove(__instance.GetInstanceID());
     }
 
     // Build once per apply batch. Avoid IL2CPP Dictionary.TryGetValue with the
@@ -239,8 +265,15 @@ internal static class ScenePlacementSync
 
     private static GameObject Find(string id, string anchor = "", PlacementLookup lookup = null)
     {
+        if (!string.IsNullOrEmpty(anchor))
+        {
+            var originals = OriginalDecorations.Values.Where(original => original.Item != null && original.Anchor == anchor)
+                .Take(2).ToArray();
+            if (originals.Length == 1) return originals[0].Item.gameObject;
+        }
         if (string.IsNullOrEmpty(id)) return null;
-        if (FurnitureAliases.TryGetValue(id, out var alias) && alias != null) return alias;
+        if (FurnitureAliases.TryGetValue(id, out var alias) && alias != null &&
+            alias.GetComponent<Placeable>()?.m_Invalidated != true) return alias;
         if (id.StartsWith("breakdown-", StringComparison.Ordinal))
         {
             BreakDown match = null;
@@ -252,6 +285,8 @@ internal static class ScenePlacementSync
             }
             return match != null ? match.gameObject : null;
         }
+        var native = OriginalDecorations.Values.Where(original => original.Item != null && original.Id == id).Take(2).ToArray();
+        if (native.Length == 1) return native[0].Item.gameObject;
         var obj = ObjectGuidManager.Lookup(id);
         if (DecorationItem.TryGetDecorationFromId(id, out var decoration) && decoration != null) return decoration.gameObject;
         lookup ??= new PlacementLookup();
@@ -260,17 +295,10 @@ internal static class ScenePlacementSync
         if (NativeFurnitureIds.TryGetValue((MyMod.level_guid, id), out string nativeId) &&
             !LatestRevision.ContainsKey(nativeId) && lookup.Find(nativeId) is { } known && known != null)
             return known.gameObject;
-        if (obj != null && (obj.GetComponent<DecorationItem>() != null || obj.GetComponent<Placeable>() != null)) return obj;
-        if (!string.IsNullOrEmpty(anchor))
+        if (obj != null)
         {
-            GameObject match = null;
-            foreach (var item in UnityEngine.Object.FindObjectsOfType<DecorationItem>(true))
-            {
-                if (item == null || Anchor(item.gameObject) != anchor) continue;
-                if (match != null) return null;
-                match = item.gameObject;
-            }
-            return match;
+            var placed = obj.GetComponent<Placeable>();
+            if (placed?.m_Invalidated != true && (placed != null || obj.GetComponent<DecorationItem>() != null)) return obj;
         }
         return null;
     }
@@ -336,7 +364,7 @@ internal static class ScenePlacementSync
 
     internal static void PublishFurniture(GameObject obj)
     {
-        if (placingFurniture != null) return;
+        if (placingFurniture != null || NativePlacementConfirmed(obj)) return;
         PublishMove(CaptureFurniture(obj), obj);
     }
 
@@ -349,13 +377,52 @@ internal static class ScenePlacementSync
         if (decoration == null && obj.GetComponent<Placeable>() == null) return null;
         string id = Id(obj);
         if (id.Length == 0) return null;
-        string parent = decoration != null && decoration.DecorationParent != null ? Id(decoration.DecorationParent.gameObject) : "";
-        var move = new Move(id, parent, Pose.From(obj.transform), Guid.NewGuid().ToString("N"), 0, 2,
-            Anchor(obj), Anchor(decoration?.DecorationParent?.gameObject), Visible: CaptureVisibleMeshes(obj));
+        var parent = decoration?.DecorationParent;
+        string parentId = parent != null ? Id(parent.gameObject) : "";
+        var pose = Pose.From(obj.transform);
+        string anchor = Anchor(obj);
+        var move = new Move(id, parentId, pose, Guid.NewGuid().ToString("N"), 0, 2,
+            anchor, Anchor(parent?.gameObject), Visible: CaptureVisibleMeshes(obj));
+        if (anchor.Length > 0)
+            return move with { Relative = parentId.Length > 0 ? RelativePose(parent.transform, pose) : null };
         var placeable = obj.GetComponent<Placeable>();
         if (placeable == null || IsFixedBed(obj) || !Guid.TryParseExact(placeable.m_Addressable?.AssetGUID, "N", out _)) return move;
         var scale = obj.transform.localScale;
         return move with { Anchor = "", Asset = placeable.m_Addressable.AssetGUID, AssetName = obj.name, Sx = scale.x, Sy = scale.y, Sz = scale.z };
+    }
+
+    private static Pose RelativePose(Transform parent, Pose pose)
+    {
+        var position = parent.InverseTransformPoint(pose.Position);
+        var rotation = Quaternion.Inverse(parent.rotation) * pose.Rotation;
+        return new Pose(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w);
+    }
+
+    private static Pose WorldPose(Transform parent, Pose relative)
+    {
+        var position = parent.TransformPoint(relative.Position);
+        var rotation = parent.rotation * relative.Rotation;
+        return new Pose(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w);
+    }
+
+    private static bool IsNativeDecorationMove(Move move) => !string.IsNullOrEmpty(move.Anchor) && string.IsNullOrEmpty(move.Asset);
+
+    private static IEnumerable<DecorationItem> AttachedDecorations(DecorationItem parent)
+    {
+        if (parent == null || parent.DecorationChildren == null) yield break;
+        foreach (var child in parent.DecorationChildren)
+        {
+            if (child == null || child.DecorationParent != parent) continue;
+            yield return child;
+            foreach (var descendant in AttachedDecorations(child)) yield return descendant;
+        }
+    }
+
+    private static void PublishRemoval(Move move)
+    {
+        if (IsNativeDecorationMove(move) && (RemovedFurniture.Contains(move.Id) ||
+            Pending.TryGetValue((MyMod.level_guid, move.Id), out var pending) && pending.Move.Removed)) return;
+        PublishMove(move with { Removed = true, Parent = "", ParentAnchor = "", Visible = "", Relative = null });
     }
 
     [HarmonyPatch(typeof(DecorationItem), nameof(DecorationItem.OnBreakdown))]
@@ -366,7 +433,7 @@ internal static class ScenePlacementSync
         private static void Postfix(Move __state, bool __runOriginal)
         {
             if (__runOriginal && __state != null)
-                PublishMove(__state with { Removed = true, Parent = "", ParentAnchor = "", Visible = "" });
+                PublishRemoval(__state);
         }
     }
 
@@ -386,7 +453,7 @@ internal static class ScenePlacementSync
             ? CaptureFurniture(decoration.gameObject) : null;
         if (move == null && string.IsNullOrEmpty(item.GetComponent<ObjectGuid>()?.Get()))
             move = new Move(BreakdownId(item), "", Pose.From(item.transform), Guid.NewGuid().ToString("N"), 0, 2);
-        return move == null ? null : () => PublishMove(move with { Removed = true, Parent = "", ParentAnchor = "", Visible = "" });
+        return move == null ? null : () => PublishRemoval(move);
     }
 
     private static void PublishMove(Move move, GameObject source = null)
@@ -396,7 +463,7 @@ internal static class ScenePlacementSync
             move = move with { Origin = placementOrigin, BaseRevision = placementRevision };
         if (move.BaseRevision < 0)
             move = move with { BaseRevision = CurrentFurnitureRevision(string.IsNullOrEmpty(move.PreviousId) ? move.Id : move.PreviousId) };
-        if (source != null && !move.Removed && !string.IsNullOrEmpty(move.Asset) && !FurnitureSettled(source))
+        if (source != null && !move.Removed && !move.Stored && !string.IsNullOrEmpty(move.Asset) && !FurnitureSettled(source))
         {
             SettlingFurniture[move.Id] = (move, source);
             return;
@@ -448,8 +515,8 @@ internal static class ScenePlacementSync
             placementOriginObject = __0;
             placementRevision = CurrentFurnitureRevision(id);
             var placeable = __0.GetComponent<Placeable>();
-            if (__0.activeInHierarchy && placeable != null && !placeable.m_Invalidated &&
-                PlaceableManager.GetPlacementState(placeable) is not (PlacementState.OnPlayer or PlacementState.Removed))
+            if (__0.activeInHierarchy && (OriginalDecoration(__0) != null || placeable != null && !placeable.m_Invalidated &&
+                PlaceableManager.GetPlacementState(placeable) is not (PlacementState.OnPlayer or PlacementState.Removed)))
                 placementOrigin = Pose.From(__0.transform);
             return true;
         }
@@ -474,23 +541,23 @@ internal static class ScenePlacementSync
                 placingFurniture = __state;
                 return;
             }
-            var moves = obj.GetComponentsInChildren<DecorationItem>(true)
-                .Select(item => CaptureFurniture(item.gameObject)).Where(move => move != null).ToList();
+            var state = new FurniturePlacement { Object = obj };
+            var moves = new List<Move>();
+            void Capture(GameObject source)
+            {
+                var move = CaptureFurniture(source);
+                if (move != null && state.Objects.TryAdd(move.Id, source)) moves.Add(move);
+            }
+            Capture(obj);
+            foreach (var item in obj.GetComponentsInChildren<DecorationItem>(true))
+                if (OriginalDecoration(item.gameObject) == null) Capture(item.gameObject);
             if (__instance.m_DecorationItemChain != null)
                 foreach (var item in __instance.m_DecorationItemChain)
-                {
-                    var move = item.Item != null ? CaptureFurniture(item.Item.gameObject) : null;
-                    if (move != null && !moves.Any(existing => existing.Id == move.Id)) moves.Add(move);
-                }
-            var rootMove = CaptureFurniture(obj);
-            if (rootMove != null && !moves.Any(existing => existing.Id == rootMove.Id)) moves.Insert(0, rootMove);
-            __state = new FurniturePlacement { Object = obj, Moves = moves.ToArray() };
-            foreach (var move in moves)
-            {
-                var source = rootMove?.Id == move.Id ? obj : Find(move.Id, move.Anchor);
-                if (source != null) __state.Objects[move.Id] = source;
-            }
-            placingFurniture = __state;
+                    if (item.Item != null) Capture(item.Item.gameObject);
+            foreach (var child in AttachedDecorations(obj.GetComponent<DecorationItem>()))
+                if (OriginalDecoration(child.gameObject) != null) Capture(child.gameObject);
+            state.Moves = moves.ToArray();
+            placingFurniture = __state = state;
         }
 
         private static void Postfix(PlayerManager __instance, FurniturePlacement __state, bool __runOriginal)
@@ -504,22 +571,51 @@ internal static class ScenePlacementSync
             foreach (var captured in __state.Moves)
             {
                 __state.Objects.TryGetValue(captured.Id, out var obj);
-                bool root = obj == __state.Object && ReferenceEquals(obj, __state.Object);
+                bool root = ReferenceEquals(obj, __state.Object);
                 if (root && __state.Replacement != null)
                 {
                     obj = __state.Replacement;
                     FurnitureAliases[captured.Id] = obj;
+                    string nativeId = obj.GetComponent<Placeable>()?.m_Guid;
+                    if (!string.IsNullOrEmpty(nativeId) && nativeId != captured.Id)
+                    {
+                        NativeFurnitureIds[(MyMod.level_guid, captured.Id)] = nativeId;
+                        bindingsChanged = true;
+                    }
                 }
                 if (obj == null) obj = Find(captured.Id, captured.Anchor);
-                var decoration = obj != null ? obj.GetComponent<DecorationItem>() : null;
-                string parent = decoration?.DecorationParent != null ? Id(decoration.DecorationParent.gameObject) : "";
-                var parentAnchor = Anchor(decoration?.DecorationParent?.gameObject);
-                var pose = root || obj == null || obj.transform.position == Vector3.zero ? captured.Pose : Pose.From(obj.transform);
+                var parentObject = obj != null ? obj.GetComponent<DecorationItem>()?.DecorationParent?.gameObject : null;
+                string parent = Id(parentObject);
+                var parentAnchor = Anchor(parentObject);
+                bool native = IsNativeDecorationMove(captured);
+                var pose = root || native || obj == null || obj.transform.position == Vector3.zero ? captured.Pose : Pose.From(obj.transform);
                 var current = obj != null ? CaptureFurniture(obj) : null;
-                PublishMove((current ?? captured) with { Parent = parent, ParentAnchor = parentAnchor, Pose = pose,
+                var confirmed = (current ?? captured) with { Parent = parent, ParentAnchor = parentAnchor, Pose = pose,
                     Origin = root && __state.Object == placementOriginObject ? placementOrigin : null,
                     BaseRevision = root && __state.Object == placementOriginObject ? placementRevision : -1,
-                    PreviousId = current != null && current.Id != captured.Id ? captured.Id : "" }, obj);
+                    PreviousId = current != null && current.Id != captured.Id ? captured.Id : "" };
+                if (native)
+                {
+                    if (nativeConfirmationFrame != Time.frameCount)
+                    {
+                        nativeConfirmationFrame = Time.frameCount;
+                        ConfirmedNativeDecorations.Clear();
+                    }
+                    if (obj != null) ConfirmedNativeDecorations.Add(obj.GetInstanceID());
+                    // The native stacking link can be cleared while finalizing the placement chain.
+                    if (!root && parent.Length == 0 && __state.Objects.ContainsKey(captured.Parent))
+                    {
+                        parent = captured.Parent;
+                        parentAnchor = captured.ParentAnchor;
+                    }
+                    var relative = parent.Length == 0 ? null :
+                        captured.Relative != null && (parent == captured.Parent ||
+                            parentAnchor.Length > 0 && parentAnchor == captured.ParentAnchor) ? captured.Relative :
+                        parentObject != null ? RelativePose(parentObject.transform, pose) : null;
+                    confirmed = confirmed with { Id = captured.Id, Anchor = captured.Anchor, Asset = "", PreviousId = "",
+                        Parent = parent, ParentAnchor = parentAnchor, Relative = relative };
+                }
+                PublishMove(confirmed, obj);
             }
         }
 
@@ -534,7 +630,8 @@ internal static class ScenePlacementSync
     {
         private static void Prefix(DecorationItem __instance, bool __0, out Move __state)
         {
-            __state = __0 && placingFurniture == null ? CaptureFurniture(__instance.gameObject) : null;
+            __state = __0 && placingFurniture == null && !NativePlacementConfirmed(__instance.gameObject)
+                ? CaptureFurniture(__instance.gameObject) : null;
         }
 
         private static void Postfix(DecorationItem __instance, bool __0, Move __state)
@@ -573,6 +670,27 @@ internal static class ScenePlacementSync
         }
     }
 
+    [HarmonyPatch(typeof(Inventory), nameof(Inventory.AddDecoration))]
+    private static class PickUpPlacedFurniture
+    {
+        private static void Prefix(DecorationItem __0, out Move __state)
+        {
+            __state = null;
+            if (!InWorld || creatingReplica || PlaceableManager.s_IsDeserializing || placingFurniture != null ||
+                __0 == null || !__0.gameObject.activeInHierarchy || __0.GetComponent<Placeable>() is not { } placeable ||
+                PlaceableManager.GetPlacementState(placeable) is PlacementState.OnPlayer or PlacementState.Removed) return;
+            var move = CaptureFurniture(__0.gameObject);
+            if (move?.Asset.Length > 0) __state = move;
+        }
+
+        private static void Postfix(Inventory __instance, DecorationItem __0, Move __state)
+        {
+            if (__state == null || __0 == null || !__instance.DecorationInInventory(__0)) return;
+            SettlingFurniture.Remove(__state.Id);
+            PublishMove(__state with { Stored = true, Parent = "", ParentAnchor = "", Visible = "" });
+        }
+    }
+
     private static Dictionary<string, Move> GetScene(string area)
     {
         int session = Server.Generation;
@@ -584,6 +702,7 @@ internal static class ScenePlacementSync
             furnitureWorld = world;
             furnitureSeed = seed;
             Saved.Clear();
+            StoredFurniture.Clear();
             AcceptedOperations.Clear();
             OperationOrder.Clear();
         }
@@ -611,7 +730,54 @@ internal static class ScenePlacementSync
         if (registrations > 0) MelonLoader.MelonLogger.Msg("[Furniture] Ignored " + registrations + " automatic registrations in " + area);
         foreach (var move in moves.Values) revision = Math.Max(revision, move.Revision);
         Saved.Add(area, moves);
+        StoredFurniture.Add(area, FurnitureContainerIndex.Load(MPSaveManager.GetPathForName("", seed), area));
+        ReconcileContainerFurniture(area, notify: false);
         return moves;
+    }
+
+    internal static bool PrepareContainerWrite(string area)
+    {
+        GetScene(area);
+        return ReconcileContainerFurniture(area, notify: true);
+    }
+
+    internal static bool ContainerWritten(string area, string container, string compressed)
+    {
+        GetScene(area);
+        StoredFurniture[area].Record(container, compressed);
+        return ReconcileContainerFurniture(area, notify: true);
+    }
+
+    private static bool ReconcileContainerFurniture(string area, bool notify)
+    {
+        var moves = Saved[area];
+        var index = StoredFurniture[area];
+        var changed = new List<Move>();
+        long nextRevision = revision;
+        foreach (var move in moves.Values)
+        {
+            if (move.Removed || move.Stored || string.IsNullOrEmpty(move.Asset)) continue;
+            if (index.Owner(move.Id) == null &&
+                (!NativeFurnitureIds.TryGetValue((area, move.Id), out string nativeId) || index.Owner(nativeId) == null)) continue;
+            changed.Add(move with { Stored = true, Parent = "", ParentAnchor = "", Visible = "",
+                Operation = Guid.NewGuid().ToString("N"), Revision = ++nextRevision });
+        }
+        if (changed.Count == 0) return true;
+        var next = new Dictionary<string, Move>(moves, StringComparer.Ordinal);
+        foreach (var move in changed) next[move.Id] = move;
+        MPSaveManager.ValidateRootExits();
+        if (!MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(next), MPSaveManager.GetSeed()))
+            return false;
+        foreach (var move in changed) moves[move.Id] = move;
+        revision = nextRevision;
+        if (notify)
+            foreach (var move in changed)
+            {
+                ReceiveMove(area, move);
+                SendToPeers(1, area, JsonSerializer.Serialize(move));
+            }
+        MelonLoader.MelonLogger.Msg($"[Furniture] Matched {changed.Count} stored furniture identities in {area}");
+        return true;
     }
 
     private static void AcceptMove(string area, Move move, int sender = 0)
@@ -620,8 +786,16 @@ internal static class ScenePlacementSync
             (move.Anchor?.Length ?? 0) > 8 || (move.ParentAnchor?.Length ?? 0) > 8 ||
             move.Parent == null || move.Parent.Length > 100 || move.Id == move.Parent || move.Version != 2 ||
             (move.Visible?.Length ?? 0) > 192 || (move.PreviousId?.Length ?? 0) > 100 ||
-            !Guid.TryParseExact(move.Operation, "N", out _) || !ValidFurnitureAsset(move)) return;
+            !Guid.TryParseExact(move.Operation, "N", out _) || !ValidFurnitureAsset(move) || !ValidAttachment(move) ||
+            (move.Stored && (move.Removed || string.IsNullOrEmpty(move.Asset)))) return;
         var moves = GetScene(area);
+        if (!move.Stored && !move.Removed && !string.IsNullOrEmpty(move.Asset) &&
+            (StoredFurniture[area].Owner(move.Id) != null ||
+                NativeFurnitureIds.TryGetValue((area, move.Id), out string nativeId) && StoredFurniture[area].Owner(nativeId) != null))
+        {
+            AckMove(sender, area, move.Operation);
+            return;
+        }
         string ancestor = move.Parent;
         for (int depth = 0; ancestor.Length > 0; depth++)
         {
@@ -718,9 +892,11 @@ internal static class ScenePlacementSync
     private static void ReceiveMove(string area, Move move)
     {
         if (area != MyMod.level_guid || !HasFurniturePose(move) || move.RegisterOnly || string.IsNullOrEmpty(move.Id) ||
-            (move.History?.Length ?? 0) > FurnitureHistoryLimit) return;
+            (move.History?.Length ?? 0) > FurnitureHistoryLimit || !ValidAttachment(move)) return;
         if (LatestRevision.TryGetValue(move.Id, out long latest) && latest >= move.Revision) return;
         LatestRevision[move.Id] = move.Revision;
+        if (move.Removed) RemovedFurniture.Add(move.Id);
+        else RemovedFurniture.Remove(move.Id);
         Unapplied[move.Id] = move;
         furnitureRetryDelay = 1f;
         nextFurnitureApply = 0f;
@@ -734,6 +910,11 @@ internal static class ScenePlacementSync
         (Guid.TryParseExact(move.Asset, "N", out _) && move.AssetName != null && move.AssetName.Length <= 128 &&
          float.IsFinite(move.Sx) && float.IsFinite(move.Sy) && float.IsFinite(move.Sz) &&
          Mathf.Abs(move.Sx) <= 20f && Mathf.Abs(move.Sy) <= 20f && Mathf.Abs(move.Sz) <= 20f);
+
+    private static bool ValidAttachment(Move move) => move.Relative == null ||
+        (IsNativeDecorationMove(move) && !move.Removed && !string.IsNullOrEmpty(move.Parent) &&
+         move.Relative.Valid && Quaternion.Dot(move.Relative.Rotation, move.Relative.Rotation) > .99f &&
+         Quaternion.Dot(move.Relative.Rotation, move.Relative.Rotation) < 1.01f);
 
     private static bool SameFurniturePose(Pose left, Pose right) =>
         left?.Valid == true && right?.Valid == true &&
@@ -772,9 +953,44 @@ internal static class ScenePlacementSync
         if (PlaceableManager.s_IsDeserializing) return false;
         if (!string.IsNullOrEmpty(move.Asset) && !ValidFurnitureAsset(move)) return true;
         var obj = Find(move.Id, move.Anchor, lookup);
-        if (move.Removed)
+        if (IsNativeDecorationMove(move) && (obj == null || Anchor(obj) != move.Anchor)) return false;
+        if (!move.Stored && obj == null && !string.IsNullOrEmpty(move.Asset))
         {
+            // Before anchors were retained, a move could only identify its scene original by GUID or pose history.
+            var originals = lookup.ForAsset(move.Asset).Where(candidate => candidate != null &&
+                OriginalDecoration(candidate.gameObject) is { } original && IsFurnitureMatch(move, original.Origin) &&
+                !LatestRevision.ContainsKey(original.Id) && !FurnitureAliases.Values.Any(alias => alias == candidate.gameObject))
+                .Take(2).ToArray();
+            if (originals.Length > 1) return false;
+            if (originals.Length == 1) obj = originals[0].gameObject;
+        }
+        var originalDecoration = OriginalDecoration(obj);
+        if (originalDecoration != null && originalDecoration.Id != move.Id)
+            FurnitureAliases[move.Id] = obj;
+        if (move.Removed || move.Stored)
+        {
+            if (move.Stored && obj == null)
+            {
+                var candidates = lookup.ForAsset(move.Asset).Where(candidate => candidate != null &&
+                    candidate.gameObject.activeInHierarchy && !candidate.m_Invalidated &&
+                    !LatestRevision.ContainsKey(candidate.m_Guid ?? "") &&
+                    !FurnitureAliases.Values.Any(alias => alias == candidate.gameObject) &&
+                    IsFurnitureMatch(move, Pose.From(candidate.transform))).Take(2).ToArray();
+                if (candidates.Length == 1)
+                {
+                    obj = candidates[0].gameObject;
+                    FurnitureAliases[move.Id] = obj;
+                    if (!string.IsNullOrEmpty(candidates[0].m_Guid))
+                    {
+                        NativeFurnitureIds[(MyMod.level_guid, move.Id)] = candidates[0].m_Guid;
+                        bindingsChanged = true;
+                    }
+                }
+            }
             if (obj == null) return false;
+            if (move.Stored && (!obj.activeInHierarchy ||
+                obj.GetComponent<Placeable>() is { } hidden && PlaceableManager.GetPlacementState(hidden) == PlacementState.OnPlayer))
+                return true;
             var activePlayer = GameManager.GetPlayerManagerComponent();
             if (activePlayer != null && (activePlayer.m_ObjectToPlace == obj || activePlayer.m_ObjectToPlaceDecorationItem?.gameObject == obj)) return false;
             var removedDecoration = obj.GetComponent<DecorationItem>();
@@ -850,33 +1066,58 @@ internal static class ScenePlacementSync
         bool fixedBed = IsFixedBed(obj);
         if (fixedBed && BedRest.IsOccupied(obj.GetComponentInChildren<Bed>(true))) return false;
         var player = GameManager.GetPlayerManagerComponent();
-        if (player != null && player.m_ObjectToPlace == obj) return false;
+        if (player != null && (player.m_ObjectToPlace == obj || player.m_ObjectToPlaceDecorationItem?.gameObject == obj)) return false;
         var decoration = obj.GetComponent<DecorationItem>();
         if (decoration == null && placeable == null) return true;
+        if (!obj.activeSelf && placeable != null && !string.IsNullOrEmpty(move.Asset)) obj.SetActive(true);
         GameObject parent = null;
         bool awaitingParent = false;
         if (decoration != null && !fixedBed)
         {
             parent = Find(move.Parent, move.ParentAnchor, lookup);
             awaitingParent = move.Parent.Length > 0 && (parent == null || !parent.activeInHierarchy);
+            if (awaitingParent && originalDecoration != null)
+            {
+                if (!RemovedFurniture.Contains(move.Parent)) return false;
+                // A legacy attachment can refer to a shelf that has since been destroyed.
+                parent = null;
+                awaitingParent = false;
+            }
         }
         var sectors = BoxSectorManager.s_Instance;
-        bool changed = (obj.transform.position - move.Pose.Position).sqrMagnitude > .000001f ||
-            Mathf.Abs(Quaternion.Dot(obj.transform.rotation, move.Pose.Rotation)) < .99999f;
         var parentDecoration = parent != null ? parent.GetComponent<DecorationItem>() : null;
+        var pose = move.Relative?.Valid == true && parentDecoration != null && !awaitingParent
+            ? WorldPose(parent.transform, move.Relative) : move.Pose;
+        bool changed = (obj.transform.position - pose.Position).sqrMagnitude > .000001f ||
+            Mathf.Abs(Quaternion.Dot(obj.transform.rotation, pose.Rotation)) < .99999f;
         bool changeParent = decoration != null && !fixedBed &&
             (awaitingParent ? decoration.DecorationParent != null && !decoration.DecorationParent.gameObject.activeInHierarchy :
                 parentDecoration != decoration.DecorationParent && (parent == null || !parent.transform.IsChildOf(obj.transform)));
         bool repairSectors = changed || changeParent || (!awaitingParent &&
             !obj.GetComponentsInChildren<Renderer>(true).Any(VisibleRenderer));
+        var carried = changed && !awaitingParent ? AttachedDecorations(decoration)
+            .Where(child => child.gameObject.activeInHierarchy && OriginalDecoration(child.gameObject) != null &&
+                (player == null || player.m_ObjectToPlace != child.gameObject && player.m_ObjectToPlaceDecorationItem != child))
+            .Select(child => (Item: child, Relative: RelativePose(obj.transform, Pose.From(child.transform)))).ToArray()
+            : Array.Empty<(DecorationItem Item, Pose Relative)>();
         if (repairSectors && sectors != null && decoration != null)
+        {
             sectors.RemoveDecorationFromSystem(decoration);
+            foreach (var child in carried) sectors.RemoveDecorationFromSystem(child.Item);
+        }
         if (changeParent) decoration.SetParent(awaitingParent ? null : parentDecoration);
-        obj.transform.SetPositionAndRotation(move.Pose.Position, move.Pose.Rotation);
+        obj.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
+        // DecorationParent is a stacking link. These children can have independent Unity transforms.
+        foreach (var child in carried)
+        {
+            var childPose = WorldPose(obj.transform, child.Relative);
+            child.Item.transform.SetPositionAndRotation(childPose.Position, childPose.Rotation);
+        }
         if (!string.IsNullOrEmpty(move.Asset)) FurnitureAliases[move.Id] = obj;
         if (repairSectors && sectors != null && decoration != null)
         {
             sectors.MaybeAddDecorationIntoSystem(decoration);
+            foreach (var child in carried) sectors.MaybeAddDecorationIntoSystem(child.Item);
             furnitureSectorsDirty = true;
         }
         int restored = RestoreFurnitureMeshes(obj, move.Visible);
@@ -886,6 +1127,61 @@ internal static class ScenePlacementSync
 
     private static bool IsFurnitureMatch(Move move, Pose current) =>
         SameFurniturePose(move.Pose, current) || move.History?.Any(prior => SameFurniturePose(prior, current)) == true;
+
+    internal static void ProbeFurnitureContainer(Action<bool, string> check)
+    {
+        string area = MyMod.level_guid;
+        var inventory = GameManager.GetInventoryComponent();
+        var box = UnityEngine.Object.FindObjectsOfType<Container>().FirstOrDefault(item =>
+            item != null && item.gameObject.activeInHierarchy && item.m_DecorationItems?.Count == 0);
+        if (box == null) throw new InvalidOperationException("Furniture fixture requires a container.");
+        string boxId = ContainerLootSync.EnsureId(box);
+        string id = Guid.NewGuid().ToString();
+        var pose = Pose.From(box.transform);
+        var floor = new Move(id, "", pose with { X = pose.X + 1f }, Guid.NewGuid().ToString("N"), 0, 2,
+            Asset: "1d1568f932e23904cbbb9b6dfca46d06", AssetName: "INTERACTIVE_CuringBox (PLACED)", BaseRevision: 0);
+        AcceptMove(area, floor);
+        floor = GetScene(area)[id];
+        check(Apply(floor, new PlacementLookup()), "furniture journal materializes the crafted box");
+        var spawned = Find(id);
+        check(spawned != null && spawned.activeInHierarchy, "one visible crafted box before pickup");
+
+        var decoration = spawned.GetComponent<DecorationItem>();
+        inventory.AddDecoration(decoration);
+        check(inventory.DecorationInInventory(decoration) && GetScene(area)[id].Stored,
+            "native pickup marks the furniture identity as stored");
+        inventory.RemoveDecoration(decoration);
+        box.AddDecorationItem(decoration);
+        box.m_Inspected = true;
+        string payload = ContainerLootSync.SerializeContents(box);
+        check(MPSaveManager.SaveContainer(area, boxId, Shared.CompressString(payload)) &&
+            StoredFurniture[area].Owner(id) == boxId, "container commit claims the same furniture ID");
+        var stored = GetScene(area)[id];
+        AcceptMove(area, floor with { Operation = Guid.NewGuid().ToString("N"), BaseRevision = stored.Revision });
+        check(GetScene(area)[id].Stored && !spawned.activeInHierarchy,
+            "a placed replay cannot override the container claim");
+        var legacy = new Dictionary<string, Move>(GetScene(area)) { [id] = floor with { Revision = stored.Revision } };
+        check(MPSaveManager.SaveData(area + "_FurniturePositions", JsonSerializer.Serialize(legacy), MPSaveManager.GetSeed()),
+            "legacy duplicate fixture persisted");
+        Saved.Remove(area);
+        StoredFurniture.Remove(area);
+        check(GetScene(area)[id].Stored, "scene reload reconciles an older floor record against the stored identity");
+        ContainerLootSync.RestoreContents(box, payload);
+        ContainerLootSync.RestoreContents(box, payload);
+        check(box.m_DecorationItems.Count == 1, "reopening a container twice keeps one furniture item");
+
+        var withdrawn = box.m_DecorationItems[0];
+        box.RemoveDecorationItem(withdrawn);
+        check(MPSaveManager.SaveContainer(area, boxId, "-") && StoredFurniture[area].Owner(id) == null,
+            "container withdrawal releases the claim");
+        ContainerLootSync.RestoreContents(box, "");
+        check(box.m_DecorationItems.Count == 0, "an empty container snapshot cannot resurrect withdrawn furniture");
+        var moved = floor with { Operation = Guid.NewGuid().ToString("N"), BaseRevision = GetScene(area)[id].Revision,
+            Pose = floor.Pose with { X = floor.Pose.X + 1f } };
+        AcceptMove(area, moved);
+        check(!GetScene(area)[id].Stored && SameFurniturePose(GetScene(area)[id].Pose, moved.Pose),
+            "the same identity can be placed after withdrawing it");
+    }
 
     internal static bool ProbeFurniture()
     {
@@ -1002,7 +1298,16 @@ internal static class ScenePlacementSync
                     Check(player.InteractiveObjectsProcessInteraction() && player.IsInspectModeActive(),
                         "native use input opens shared cooking inspection");
                     player.ExitInspectGearMode(true);
-                    Check(inspection == null && RemotePots.ContainsKey((owner, key)), "cancel keeps the portion on its original slot");
+                    Check(inspection == null && player.ActiveInteraction == null && RemotePots.ContainsKey((owner, key)),
+                        "cancel clears shared interaction and keeps the portion on its original slot");
+                    player.FindInteractiveObject(2.5f);
+                    Check(player.ActiveInteraction?.GetInteractiveObject() == remote.Visual,
+                        "cookware can be targeted again after cancel");
+                    Publish(filled with { Mode = "Ready" });
+                    Check(player.ActiveInteraction == null, "replacing an aimed replica clears the native interaction");
+                    player.FindInteractiveObject(2.5f);
+                    Check(player.ActiveInteraction?.GetInteractiveObject() == RemotePots[(owner, key)].Visual,
+                        "replacement cookware can be targeted");
                 }
             }
             finally
@@ -1054,11 +1359,14 @@ internal static class ScenePlacementSync
             Check(placed != null && placed.GetGearName() == name && placed.m_CookingPotItem?.GetGearPlacePoint() == point &&
                 !placed.m_InPlayerInventory && placed.gameObject.activeInHierarchy, name + " installed on recipient's cooking slot");
             var picker = GameCompat.Panel<Panel_ActionPicker>();
-            Check(picker != null && picker.isActiveAndEnabled && picker.m_ActionPickerItemDataList.Count >= 3,
-                name + " opens native pick-up, cook and water actions (showing " + (picker?.m_ActionPickerItemDataList?.Count ?? -1) + ")");
-            picker.Enable(false);
+            Check(picker != null && !picker.isActiveAndEnabled, name + " transfer leaves the action picker closed");
             DeliverGear(area, transfer);
-            Check(point.GetPlacedGear() == placed, name + " repeated receipt keeps one copy");
+            Check(point.GetPlacedGear() == placed && !picker.isActiveAndEnabled,
+                name + " repeated receipt keeps one copy and leaves the action picker closed");
+            slot.UpdateInteraction(0f);
+            Check(slot.PerformInteraction() && picker.isActiveAndEnabled && picker.m_ActionPickerItemDataList.Count >= 3,
+                name + " opens native pick-up, cook and water actions on use");
+            picker.Enable(false);
             placed.m_CookingPotItem.DetachFromFire();
             point.ResetPlacedGear();
             RetireCookingGear(placed);
@@ -1448,12 +1756,32 @@ internal static class ScenePlacementSync
         private static bool Prefix(PlayerManager __instance, float __0)
         {
             var target = AimCookware(__0);
-            if (target == null || !target.TryGetComponent<Comps.SharedCookwareInteraction>(out var interaction)) return true;
-            var native = interaction.Cast<Il2CppTLD.Interactions.IInteraction>();
+            if (target == null || !target.TryGetComponent<Comps.SharedCookwareInteraction>(out var interaction) || !interaction.IsEnabled) return true;
+            var native = interaction.Cast<IInteraction>();
             __instance.m_LocationOfLastInteractHit = target.transform.position;
             __instance.SetCurrentInteraction(native);
             return false;
         }
+    }
+
+    [HarmonyPatch(typeof(BaseInteraction), nameof(BaseInteraction.TriggerEvent))]
+    private static class SharedCookwareEvents
+    {
+        // These injected interactions have no serialized events for the native dispatcher.
+        private static bool Prefix(BaseInteraction __instance) =>
+            __instance.TryCast<Comps.SharedCookwareInteraction>() is null;
+    }
+
+    private static void ClearSharedCookwareInteraction(PlayerManager player, GameObject visual = null)
+    {
+        if (player == null || player.ActiveInteraction?.TryCast<Comps.SharedCookwareInteraction>() is not { } interaction) return;
+        if (interaction == null)
+        {
+            player.ActiveInteraction = null;
+            player.IsInteractionNearCrosshair = false;
+        }
+        else if (visual == null || interaction.gameObject == visual)
+            player.ResetInteraction();
     }
 
     private static GameObject AimCookware(Ray ray, float nearest, RaycastHit worldHit = default)
@@ -1527,7 +1855,7 @@ internal static class ScenePlacementSync
         private static bool Prefix(CookingSlot __instance, ref bool __result)
         {
             if (!CookingSlotVacant(__instance.m_GearPlacePoint) ||
-                FindRemotePot(__instance.m_GearPlacePoint) is not { } entry) return true;
+                !FindRemotePot(__instance.m_GearPlacePoint).HasValue) return true;
             __result = OpenCookingActions(__instance.gameObject);
             return false;
         }
@@ -1535,20 +1863,27 @@ internal static class ScenePlacementSync
 
     private sealed record CookingInspection(string Scene, int Key, CookingRequest Request, GameObject Root, GearItem Food);
     private static CookingInspection inspection;
+    private sealed record CookwareUse(string Scene, Guid Id, float Expires);
+    private static CookwareUse cookwareUse;
 
     internal static bool OpenCookingActions(GameObject target)
     {
-        if (FindRemoteCookware(target) is not { } entry) return false;
-        if (inspection != null) return true;
+        if (CoopReturnToMenu.InProgress || target == null || !target.activeInHierarchy ||
+            FindRemoteCookware(target) is not { } entry) return false;
+        var player = GameManager.GetPlayerManagerComponent();
+        if (inspection != null || player == null || player.GetControlMode() != PlayerControlMode.Normal ||
+            player.IsInPlacementMode() || player.IsInspectModeActive() ||
+            InterfaceManager.IsPanelEnabled<Panel_Confirmation>() ||
+            GameCompat.Panel<Panel_ActionPicker>()?.isActiveAndEnabled == true) return false;
         var state = entry.Value.State;
         if (state.CanTake && TakeAction(state) == 1 && IsPotName(state.Gear) && !IsCookingDummyName(state.Gear))
         {
+            cookwareUse = new CookwareUse(MyMod.level_guid, state.Portion, Time.realtimeSinceStartup + 3f);
             RequestSharedCookware(entry.Key.Key, new CookingRequest(entry.Key.Owner, UseEmptyCookware, state.Portion));
             return true;
         }
-        var player = GameManager.GetPlayerManagerComponent();
         var prefab = MyMod.GetGearItemObject(state.Gear);
-        if (player == null || prefab == null || !state.CanTake) return true;
+        if (prefab == null || !state.CanTake) return true;
         var root = UnityEngine.Object.Instantiate(prefab);
         root.transform.position = player.transform.position + Vector3.up * 100f;
         root.AddComponent<Comps.DoNotSerializeThis>();
@@ -1669,7 +2004,12 @@ internal static class ScenePlacementSync
     [HarmonyPatch(typeof(PlayerManager), nameof(PlayerManager.ExitInspectGearMode))]
     private static class CloseSharedInspection
     {
-        private static void Postfix() => EndCookingInspection();
+        private static void Postfix(PlayerManager __instance)
+        {
+            if (inspection == null) return;
+            ClearSharedCookwareInteraction(__instance);
+            EndCookingInspection();
+        }
     }
 
     private static int TakeAction(Pot state) => state.Liquid == 2 ? 4 : state.Liquid == 1 ? 3 : state.Food.Length > 0 ? 2 : 1;
@@ -1956,6 +2296,9 @@ internal static class ScenePlacementSync
         var prefab = MyMod.GetGearItemObject(transfer.Gear);
         if (player == null || inventory == null || prefab == null || transfer.Id == Guid.Empty) return false;
         if (!AcceptOutput(transfer.Id)) return true;
+        bool recentUse = cookwareUse is { } use && use.Id == transfer.Id && use.Scene == area &&
+            use.Expires >= Time.realtimeSinceStartup;
+        if (cookwareUse?.Id == transfer.Id) cookwareUse = null;
 
         var gear = UnityEngine.Object.Instantiate(prefab, player.transform.position, Quaternion.identity).GetComponent<GearItem>();
         gear.DeserializeFromJson(transfer.Json);
@@ -1991,9 +2334,10 @@ internal static class ScenePlacementSync
                     point.PlaceGear(gear, reposition: true);
                 if (point.m_PlacedGear == gear || attached?.GetGearPlacePoint() == point)
                 {
-                    if (!player.IsInspectModeActive() && GameCompat.Panel<Panel_ActionPicker>() is { } picker)
+                    if (recentUse && StillAimingAtHandoff(player, gear, point) &&
+                        GameCompat.Panel<Panel_ActionPicker>() is { } picker)
                         picker.ShowActionPicker(gear.gameObject);
-                    MelonLoader.MelonLogger.Msg("[Cooking] Opened transferred " + transfer.Gear + " on its slot");
+                    MelonLoader.MelonLogger.Msg("[Cooking] Placed transferred " + transfer.Gear + " on its slot");
                     return true;
                 }
             }
@@ -2017,6 +2361,18 @@ internal static class ScenePlacementSync
         }
         MelonLoader.MelonLogger.Msg($"[Cooking] Delivered {transfer.Gear} id={transfer.Id} condition={transfer.Condition:F3}");
         return true;
+    }
+
+    private static bool StillAimingAtHandoff(PlayerManager player, GearItem gear, GearPlacePoint point)
+    {
+        if (!GearPlacementSync.CanInteract(player) || CoopReturnToMenu.InProgress ||
+            GameManager.GetVpFPSCamera()?.GetCameraComponent()?.transform is not { } camera) return false;
+        Vector3 slotPosition = point.transform.position;
+        var target = camera.position + camera.forward * Vector3.Dot(slotPosition - camera.position, camera.forward);
+        if ((target - slotPosition).sqrMagnitude > .25f) return false;
+        var root = player.GetInteractiveObjectUnderCrosshairs(2.5f);
+        return root != null && (root == gear.gameObject || root.transform.IsChildOf(gear.transform) ||
+            root.GetComponentInParent<CookingSlot>()?.m_GearPlacePoint == point);
     }
 
     private static void RestoreFoodHeat(GearItem gear, GearTransfer transfer)
@@ -2052,11 +2408,7 @@ internal static class ScenePlacementSync
         RemotePots.TryGetValue(identity, out var previous);
         if (pot == null)
         {
-            if (previous?.Visual != null)
-            {
-                previous.Visual.SetActive(false);
-                UnityEngine.Object.Destroy(previous.Visual);
-            }
+            RetireCookwareVisual(previous?.Visual);
             RemotePots.Remove(identity);
             return;
         }
@@ -2066,8 +2418,7 @@ internal static class ScenePlacementSync
         var hitboxes = previous?.Hitboxes;
         if (previous != null && (previous.State.Gear != pot.Gear || previous.State.Food != pot.Food || previous.State.Meshes != pot.Meshes || previous.State.Liquid != pot.Liquid || previous.State.Mode != pot.Mode) && visual != null)
         {
-            visual.SetActive(false);
-            UnityEngine.Object.Destroy(visual);
+            RetireCookwareVisual(visual);
             visual = null;
         }
         if (visual == null)
@@ -2077,6 +2428,14 @@ internal static class ScenePlacementSync
         }
         if (visual != null) visual.transform.SetPositionAndRotation(pot.Pose.Position, pot.Pose.Rotation);
         RemotePots[identity] = new RemotePot(pot, visual, hitboxes, Time.realtimeSinceStartup + 7f);
+    }
+
+    private static void RetireCookwareVisual(GameObject visual)
+    {
+        if (visual == null) return;
+        ClearSharedCookwareInteraction(GameManager.GetPlayerManagerComponent(), visual);
+        visual.SetActive(false);
+        UnityEngine.Object.Destroy(visual);
     }
 
     private static bool ValidPot(Pot pot) => float.IsFinite(pot.Liters) && pot.Liters >= 0f && pot.Liters <= 20f && IsCookingGearName(pot.Gear) && pot.Pose?.Valid == true && pot.Slot?.Valid == true &&
@@ -2125,8 +2484,7 @@ internal static class ScenePlacementSync
         }
         else if (cooking != null && IsCookingGearName(pot.Food))
             CopyCookwareFood(pot, prefab, cooking, root);
-        var interaction = root.AddComponent<Comps.SharedCookwareInteraction>();
-        interaction.m_EventEntries = new Il2CppSystem.Collections.Generic.List<Il2CppTLD.Interactions.InteractionEventEntry>();
+        root.AddComponent<Comps.SharedCookwareInteraction>();
         return root;
     }
 
@@ -2235,8 +2593,10 @@ internal static class ScenePlacementSync
         }
         if (area != scene)
         {
+            cookwareUse = null;
+            ClearSharedCookwareInteraction(GameManager.GetPlayerManagerComponent());
             foreach (var pot in RemotePots.Values)
-                if (pot.Visual != null) UnityEngine.Object.Destroy(pot.Visual);
+                RetireCookwareVisual(pot.Visual);
             RemotePots.Clear();
             LocalPots.Clear();
             LocalCooking.Clear();
@@ -2253,6 +2613,7 @@ internal static class ScenePlacementSync
             placementOrigin = null;
             Unapplied.Clear();
             LatestRevision.Clear();
+            RemovedFurniture.Clear();
             FurnitureApplyWarnings.Clear();
             FurnitureCreateAttempts.Clear();
             FurnitureAliases.Clear();
@@ -2289,6 +2650,7 @@ internal static class ScenePlacementSync
             foreach (var move in savedFurniture.Values)
             {
                 if (Unapplied.TryGetValue(move.Id, out var queued) && queued.Revision > move.Revision) continue;
+                if (move.Removed) RemovedFurniture.Add(move.Id);
                 Unapplied[move.Id] = move;
             }
             MelonLoader.MelonLogger.Msg($"[Furniture] Replay scene={area} saved={savedFurniture.Count} pending={Unapplied.Count}");
@@ -2301,7 +2663,7 @@ internal static class ScenePlacementSync
         {
             bool progressed = false;
             var lookup = new PlacementLookup();
-            foreach (var pair in Unapplied.OrderBy(pair => !pair.Value.Removed)
+            foreach (var pair in Unapplied.OrderBy(pair => !(pair.Value.Removed || pair.Value.Stored))
                 .ThenBy(pair => QueuedParentDepth(pair.Value)).ToArray())
             {
                 try
@@ -2395,6 +2757,7 @@ internal static class ScenePlacementSync
             if (!included.Contains(entry.Key) && LatestRevision.TryGetValue(entry.Key, out long current) && current == entry.Value)
             {
                 LatestRevision.Remove(entry.Key);
+                RemovedFurniture.Remove(entry.Key);
                 Unapplied.Remove(entry.Key);
             }
         foreach (var move in records) ReceiveMove(area, move);
@@ -2408,6 +2771,7 @@ internal static class ScenePlacementSync
         private static void Postfix()
         {
             LatestRevision.Clear();
+            RemovedFurniture.Clear();
             FurnitureAliases.Clear();
             ScheduleFurnitureReplay();
         }

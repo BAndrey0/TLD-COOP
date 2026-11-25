@@ -47,6 +47,29 @@ static class Program
             "A second guest cannot overwrite furniture moved since their last snapshot");
         Check(!FurnitureReplicationPolicy.CanCreate(2, true, 2) && !FurnitureReplicationPolicy.CanCreate(0, true, 1) &&
             FurnitureReplicationPolicy.CanCreate(0, true, 0), "Do not spawn a third copy when a legacy item could not be identified");
+        var storedFurniture = new FurnitureContainerIndex();
+        string boxId = Guid.NewGuid().ToString("D");
+        const string firstContainer = "first";
+        const string secondContainer = "second";
+        string Store(string id)
+        {
+            byte[] json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            { m_SerializedDecorationItems = new[] { new { m_GUID = id } } });
+            using var output = new System.IO.MemoryStream();
+            output.Write(BitConverter.GetBytes(json.Length));
+            using (var gzip = new System.IO.Compression.GZipStream(output, System.IO.Compression.CompressionMode.Compress, true))
+                gzip.Write(json);
+            return Convert.ToBase64String(output.ToArray());
+        }
+        storedFurniture.Record(firstContainer, Store(boxId.ToUpperInvariant()));
+        Check(storedFurniture.Owner(boxId) == firstContainer, "Container claims its native furniture GUID");
+        storedFurniture.Record(secondContainer, Store(boxId));
+        storedFurniture.Record(firstContainer, "-");
+        Check(storedFurniture.Owner(boxId) == secondContainer, "Closing an older container cannot release furniture stored in a newer one");
+        storedFurniture.Record(secondContainer, "invalid");
+        Check(storedFurniture.Owner(boxId) == secondContainer, "Invalid container snapshots preserve ownership");
+        storedFurniture.Record(secondContainer, "-");
+        Check(storedFurniture.Owner(boxId) == null, "Taking furniture out of its container releases the storage claim");
         float firstGrant = WaterWithdrawalPolicy.Granted(1f, .6f);
         float secondGrant = WaterWithdrawalPolicy.Granted(1f - firstGrant, .6f);
         Check(System.Math.Abs(firstGrant + secondGrant - 1f) < .0001f && WaterWithdrawalPolicy.Granted(0f, .6f) == 0f,

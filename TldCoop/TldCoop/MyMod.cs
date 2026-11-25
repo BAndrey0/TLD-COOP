@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.43";
+		public const string Version = "0.16.44";
 
 		public const string DownloadLink = null;
 
@@ -6886,10 +6886,29 @@ public class MyMod : MelonMod
 				component.m_RolledSpawnChance = true;
 				component.m_StartHasBeenCalled = true;
 				component.m_MarkedForNextUpdateDestroy = false;
-				if (component.m_FoodItem != null && extra.m_Variant == 1 && gameObject.GetComponent<MeshSwapItem>() != null)
+				var food = component.m_FoodItem;
+				if (food != null && (food.m_IsFish || extra.m_Variant == 1) &&
+					gameObject.GetComponent<MeshSwapItem>() is { } meshSwap)
 				{
-					gameObject.GetComponent<MeshSwapItem>().m_MeshObjOpened.SetActive(value: true);
-					gameObject.GetComponent<MeshSwapItem>().m_MeshObjUnopened.SetActive(value: false);
+					if (food.m_IsFish)
+					{
+						// The prefab can ship with all three meshes active. The replica strips MeshSwapItem before Start.
+						var unopened = meshSwap.m_MeshObjUnopened;
+						var opened = meshSwap.m_MeshObjOpened;
+						var cookingReady = meshSwap.m_MeshObjCookingReady;
+						var visibleMesh = extra.m_Variant == 1 ? opened : unopened;
+						if (visibleMesh != null)
+						{
+							unopened?.SetActive(unopened == visibleMesh);
+							opened?.SetActive(opened == visibleMesh);
+							cookingReady?.SetActive(cookingReady == visibleMesh);
+						}
+					}
+					else
+					{
+						meshSwap.m_MeshObjOpened.SetActive(value: true);
+						meshSwap.m_MeshObjUnopened.SetActive(value: false);
+					}
 				}
 				localizedDisplayName = (flag ? Localization.Get(extra.m_ExpeditionNote) : component.DisplayName);
 			}
@@ -7010,6 +7029,23 @@ public class MyMod : MelonMod
 		else
 		{
 			MelonLogger.Msg(System.ConsoleColor.Red, "Gear prefab with name " + gearName + " not exist! Maybe you miss an modded item pack?");
+		}
+	}
+
+	internal static void ProbeDroppedFish(System.Action<bool, string> check)
+	{
+		var player = GameManager.GetPlayerTransform();
+		for (int variant = 0; variant <= 1; variant++)
+		{
+			int key = -6510703 - variant;
+			FakeDropItem(0, player.position, Quaternion.identity, key,
+				new DataStr.ExtraDataForDroppedGear { m_GearName = "GEAR_RawLakeWhiteFish", m_Variant = variant });
+			var replica = DroppedGearsObjs[key];
+			var swap = replica.GetComponent<MeshSwapItem>();
+			check(swap != null && swap.m_MeshObjUnopened.activeSelf == (variant == 0) &&
+				swap.m_MeshObjOpened.activeSelf == (variant == 1) && !swap.m_MeshObjCookingReady.activeSelf,
+				$"whitefish replica keeps one mesh for variant {variant}");
+			PickDroppedItem(key, 0);
 		}
 	}
 
@@ -8252,18 +8288,7 @@ public class MyMod : MelonMod
 			goingToOpenContinaer.m_OpenInProgress = false;
 			goingToOpenContinaer.m_Inspected = true;
 			goingToOpenContinaer.m_StartInspected = true;
-			if (text == "")
-			{
-				MelonLogger.Msg("Container empty");
-				goingToOpenContinaer.DestroyAllGear();
-			}
-			else
-			{
-				MelonLogger.Msg("Opening with loot, loading loot to the container");
-				Il2CppSystem.Collections.Generic.List<GearItem> loadedItems = new Il2CppSystem.Collections.Generic.List<GearItem>();
-				using(new ContainerContentRestore(goingToOpenContinaer))
-					goingToOpenContinaer.Deserialize(InterloperFilterContainer(text), loadedItems);
-			}
+			ContainerLootSync.RestoreContents(goingToOpenContinaer, text == "" ? "" : InterloperFilterContainer(text));
 			GameCompat.Panel<Panel_Container>().SetContainer(goingToOpenContinaer, goingToOpenContinaer.m_LocalizedDisplayName.Text());
 			ContainerLootSync.AcceptedOpen(goingToOpenContinaer);
 			CoopContainerFlow.Present(goingToOpenContinaer);
@@ -8294,16 +8319,7 @@ public class MyMod : MelonMod
 		box.m_OpenInProgress = false;
 		box.m_Inspected = true;
 		box.m_StartInspected = true;
-		if (text == "")
-		{
-			box.DestroyAllGear();
-		}
-		else
-		{
-			Il2CppSystem.Collections.Generic.List<GearItem> loadedItems = new Il2CppSystem.Collections.Generic.List<GearItem>();
-			using(new ContainerContentRestore(box))
-				box.Deserialize(InterloperFilterContainer(text), loadedItems);
-		}
+		ContainerLootSync.RestoreContents(box, text == "" ? "" : InterloperFilterContainer(text));
 		box.m_Inspected = true;
 		box.m_StartInspected = true;
 		GameCompat.Panel<Panel_Container>().SetContainer(box, box.m_LocalizedDisplayName.Text());
@@ -8338,7 +8354,7 @@ public class MyMod : MelonMod
 			flag = true;
 		}
 		bool flag2 = box.IsEmpty();
-		string text2 = box.Serialize();
+		string text2 = ContainerLootSync.SerializeContents(box);
 		string text3 = string.IsNullOrEmpty(DeBugMenu.ContainerOverride) ? Shared.CompressString(text2) : DeBugMenu.ContainerOverride;
 		if (sendMyPosition)
 		{
@@ -8354,7 +8370,7 @@ public class MyMod : MelonMod
 			return;
 		}
 		ContainerLootSync.HostCloseCommitted();
-		box.DestroyAllGear();
+		ContainerLootSync.ClearContents(box);
 		if (!flag2)
 		{
 			state = 1;

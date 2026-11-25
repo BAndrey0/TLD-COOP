@@ -912,7 +912,9 @@ public class MPSaveManager
 		int seed = GetSeed();
 		string keyTemplate = GetKeyTemplate(SaveKeyTemplateType.Container, scene, GUID);
 		ValidateRootExits();
-		return SaveData(keyTemplate, Content, seed);
+		if (MyMod.iAmHost && !ScenePlacementSync.PrepareContainerWrite(scene)) return false;
+		if (!SaveData(keyTemplate, Content, seed)) return false;
+		return !MyMod.iAmHost || ScenePlacementSync.ContainerWritten(scene, GUID, Content);
 	}
 
 	public static string LoadContainer(string scene, string GUID)

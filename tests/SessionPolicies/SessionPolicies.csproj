@@ -5,6 +5,7 @@
     <Compile Include="../../TldCoop/TldCoop/DroppedMovePolicy.cs" Link="DroppedMovePolicy.cs" />
     <Compile Include="../../TldCoop/TldCoop/SceneMessageLimits.cs" Link="SceneMessageLimits.cs" />
     <Compile Include="../../TldCoop/TldCoop/FurnitureReplicationPolicy.cs" Link="FurnitureReplicationPolicy.cs" />
+    <Compile Include="../../TldCoop/TldCoop/FurnitureContainerIndex.cs" Link="FurnitureContainerIndex.cs" />
     <Compile Include="../../TldCoop/TldCoop/WaterWithdrawalPolicy.cs" Link="WaterWithdrawalPolicy.cs" />
     <Compile Include="../../TldCoop/TldCoop/LegacySaveNames.cs" Link="LegacySaveNames.cs" />
     <Compile Include="../../TldCoop/TldCoop/FireClockPolicy.cs" Link="FireClockPolicy.cs" />
