@@ -2054,6 +2054,16 @@ public class Shared
 	public static DataStr.BodyHarvestUnits GetBodyHarvestUnits(string name)
 	{
 		DataStr.BodyHarvestUnits bodyHarvestUnits = new DataStr.BodyHarvestUnits();
+		if (!string.IsNullOrEmpty(name) && name.StartsWith("WILDLIFE_Cougar", StringComparison.OrdinalIgnoreCase))
+		{
+			var harvest = (WildlifeCompat.GetPrefab(name) ?? WildlifeCompat.GetPrefab("WILDLIFE_CougarA"))?.GetComponentInChildren<BodyHarvest>(true);
+			if (harvest != null)
+			{
+				bodyHarvestUnits.m_Meat = NextFloat(harvest.m_MeatAvailableMin.ToKilograms(), harvest.m_MeatAvailableMax.ToKilograms());
+				bodyHarvestUnits.m_Guts = harvest.m_GutAvailableUnits;
+			}
+			return bodyHarvestUnits;
+		}
 		switch (name)
 		{
 		case "WILDLIFE_Wolf":
@@ -2080,10 +2090,6 @@ public class Shared
 		case "WILDLIFE_Moose":
 			bodyHarvestUnits.m_Meat = NextFloat(30f, 45f);
 			bodyHarvestUnits.m_Guts = 12;
-			break;
-		case "WILDLIFE_Cougar":
-			bodyHarvestUnits.m_Meat = NextFloat(8f, 14f);
-			bodyHarvestUnits.m_Guts = 3;
 			break;
 		case "WILDLIFE_Ptarmigan":
 			bodyHarvestUnits.m_Meat = NextFloat(0.4f, 0.8f);

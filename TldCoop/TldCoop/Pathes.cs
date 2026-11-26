@@ -1028,7 +1028,7 @@ public class Pathes
 							}
 						}
 					}
-					else if (animalActor != null)
+					else if (animalActor != null && flag)
 					{
 						MelonLogger.Msg("This is AnimalActor animal");
 						WeaponSource weapon2 = __instance.m_GunType.ToWeaponSource();
@@ -1037,7 +1037,7 @@ public class Pathes
 						float num7 = __instance.Damage * component3.GetDamageScale(weapon2);
 						if ((double)num6 < (double)__instance.Accuracy)
 						{
-							if (!component3.RollChanceToKill(weapon2))
+							if (!animalActor.m_IgnoreCriticalHits && component3.RollChanceToKill(weapon2))
 							{
 								num7 = float.PositiveInfinity;
 							}
@@ -2883,8 +2883,11 @@ public class Pathes
 	[HarmonyPatch(typeof(Panel_BreakDown), "OnBreakDown")]
 	public static class Panel_BreakDown_AudioStart
 	{
-		public static void Postfix(Panel_BreakDown __instance)
+		private static bool Prefix(Panel_BreakDown __instance) => BreakdownInputGuard.CanConfirm(__instance);
+
+		public static void Postfix(Panel_BreakDown __instance, bool __runOriginal)
 		{
+			if (!__runOriginal) return;
 			if (MyMod.CrazyPatchesLogger)
 			{
 				StackTrace stackTrace = new StackTrace(new StackFrame(needFileInfo: true));
@@ -8132,7 +8135,7 @@ public class Pathes
 
 	public static void Play3dAudioOnAnimal(string GUID, int soundID)
 	{
-		GameObject gameObject = ObjectGuidManager.Lookup(GUID);
+		GameObject gameObject = LiveAnimalAudioEmitter(GUID);
 		if ((bool)gameObject)
 		{
 			GameAudioManager.Play3DSound((uint)soundID, gameObject);
@@ -8141,11 +8144,21 @@ public class Pathes
 
 	public static void Play3dAudioOnAnimal(string GUID, string soundID)
 	{
-		GameObject gameObject = ObjectGuidManager.Lookup(GUID);
+		GameObject gameObject = LiveAnimalAudioEmitter(GUID);
 		if ((bool)gameObject)
 		{
 			GameAudioManager.Play3DSound(soundID, gameObject);
 		}
+	}
+
+	internal static GameObject LiveAnimalAudioEmitter(string guid)
+	{
+		var animal = ObjectGuidManager.Lookup(guid);
+		if (animal == null || !animal.activeInHierarchy || animal.GetComponent<Comps.AnimalCorpseObject>() != null) return null;
+		if (animal.GetComponent<Comps.AnimalActor>() is { } replica)
+			return replica.m_MarkToDestroy || replica.AP_Dead || replica.AP_Corpse || replica.m_NextMode == AiMode.Dead ? null : animal;
+		var ai = animal.GetComponent<BaseAi>();
+		return ai != null && ai.m_CurrentHP > 0f && ai.GetAiMode() != AiMode.Dead ? animal : null;
 	}
 
 	public static void SendAnimalAudio(int soundID, string GUID)

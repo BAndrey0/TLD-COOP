@@ -79,11 +79,13 @@ internal static class ScenePlacementSync
     private sealed record FurnitureBinding(string Area, string Id, string NativeId);
     private static bool bindingsChanged;
     private static readonly Dictionary<string, (Move Move, GameObject Object)> SettlingFurniture = new(StringComparer.Ordinal);
-    private sealed record Pot(string Gear, Pose Pose, Pose Slot, string Meshes, string Food, string Mode, int Minutes, bool CanTake, int Liquid, string NativeHover, float Liters = 0f, Guid Portion = default);
+    private sealed record CookingFood(float Condition, float Weight, float Calories, float TotalCalories, float Heat, int Reheats);
+    private sealed record Pot(string Gear, Pose Pose, Pose Slot, string Meshes, string Food, string Mode, int Minutes, bool CanTake, int Liquid, string NativeHover, float Liters = 0f, Guid Portion = default,
+        CookingFood FoodState = null, float WaterDuringMelt = 0f, float Cooked = 0f, float Elapsed = 0f);
     private const int UseEmptyCookware = 5;
     private sealed record CookwareHandoff(Pose Slot, Pose Pose);
     private sealed record GearTransfer(Guid Id, int Requester, string Gear, string Json, float Heat, int TimesHeated,
-        float Condition, int SourceOwner, int SourceKey, CookwareHandoff Placement);
+        float Condition, int SourceOwner, int SourceKey, CookwareHandoff Placement, CookingFood FoodState = null);
     private sealed record CookingAuthorization(string Scene, int Owner, int Key, int Requester, int Action, Pose Slot, float Expires);
     private static readonly Dictionary<Guid, CookingAuthorization> AuthorizedCookingTransfers = new();
     private sealed record CookingDelivery(string Scene, GearTransfer Gear, string Data, string Recipient, float Expires, float NextSend = 0f);
@@ -1268,6 +1270,13 @@ internal static class ScenePlacementSync
         var breakdown = bowlObject?.GetComponentInChildren<BreakDown>();
         check(breakdown != null, "bowl has the native breakdown interaction");
 
+        var panel = GameCompat.Panel<Panel_BreakDown>();
+        panel.m_BreakDown = breakdown;
+        panel.Enable(true);
+        panel.OnBreakDown();
+        check(bowlObject.activeInHierarchy && !panel.IsBreakingDown(), "opening press cannot confirm the breakdown panel");
+        panel.Enable(false);
+
         var move = before with { Operation = Guid.NewGuid().ToString("N"), BaseRevision = before.Revision,
             Pose = pose with { X = pose.X - .2f } };
         AcceptMove(area, move);
@@ -1360,7 +1369,7 @@ internal static class ScenePlacementSync
 
         foreach (var sample in new[] {
             ("GEAR_RecycledCan", "", 1), ("GEAR_CookingPot", "GEAR_UncookedPorridge", 0),
-            ("GEAR_Skillet", "GEAR_RawMeatRabbit", 0), ("GEAR_CookingPotDummy", "GEAR_RawMeatRabbit", 0) })
+            ("GEAR_Skillet", "GEAR_RawMeatPtarmigan", 0), ("GEAR_CookingPotDummy", "GEAR_RawMeatRabbit", 0) })
         {
             var empty = new Pot(sample.Item1, pose, pose, "", "", "", 0, true, 0, "", Portion: Guid.NewGuid());
             int body = 0;
@@ -1369,7 +1378,8 @@ internal static class ScenePlacementSync
                 Publish(empty);
                 body = RemotePots[(owner, key)].Visual.GetComponentsInChildren<MeshRenderer>().Length;
             }
-            var filled = empty with { Food = sample.Item2, Liquid = sample.Item3, Mode = "Cooking", Liters = .5f, Minutes = 25 };
+            var filled = empty with { Food = sample.Item2, Liquid = sample.Item3, Mode = "Cooking", Liters = .5f, Minutes = 25,
+                FoodState = sample.Item2 == "GEAR_RawMeatPtarmigan" ? new CookingFood(.97f, .84f, 420f, 420f, 0f, 0) : null };
             Publish(filled);
             var remote = RemotePots[(owner, key)];
             int renders = remote.Visual.GetComponentsInChildren<MeshRenderer>().Count(renderer =>
@@ -1393,6 +1403,27 @@ internal static class ScenePlacementSync
                     player.GetInteractiveObjectDisplayTextState() == HoverTextState.CanInteract &&
                     player.GetInteractiveObjectHoverText() == CookingHover(remote.Visual),
                     sample.Item1 + " actual HUD displays the shared status");
+                if (sample.Item1 == "GEAR_RecycledCan")
+                {
+                    Check(player.InteractiveObjectsProcessInteraction() && player.IsInspectModeActive(), "opens the guest's water inspection");
+                    var can = inspection.Root.GetComponent<CookingPotItem>();
+                    var mesh = can.m_GrubMeshRenderer.GetComponent<MeshFilter>();
+                    Check(can.m_GrubMeshRenderer.enabled && mesh.sharedMesh != null && mesh.sharedMesh == can.m_WaterMesh,
+                        "native water inspection renders the water surface inside the can");
+                    var water = can.GetGearItemForInspectMode()?.m_WaterSupply;
+                    Check(water != null && Mathf.Abs(water.m_VolumeInLiters.ToLiters() - filled.Liters) < .001f,
+                        "water inspection preserves the owner's volume");
+                    player.ExitInspectGearMode(true);
+                }
+                if (sample.Item1 == "GEAR_Skillet")
+                {
+                    Check(player.InteractiveObjectsProcessInteraction() && player.IsInspectModeActive(), "opens the guest's raw ptarmigan inspection");
+                    var shown = CaptureCookingFood(inspection.Root.GetComponent<CookingPotItem>().GetGearItemForInspectMode());
+                    Check(shown != null && Mathf.Abs(shown.Condition - .97f) < .001f &&
+                        Mathf.Abs(shown.Weight - .84f) < .001f && Mathf.Abs(shown.Calories - 420f) < .01f,
+                        "guest sees the raw ptarmigan's condition, weight and calories");
+                    player.ExitInspectGearMode(true);
+                }
                 if (sample.Item1 == "GEAR_CookingPot")
                 {
                     Check(player.InteractiveObjectsProcessInteraction() && player.IsInspectModeActive(),
@@ -1473,19 +1504,25 @@ internal static class ScenePlacementSync
         }
 
         foreach (var sample in new[] { ("GEAR_Skillet", "GEAR_RawMeatRabbit", "GEAR_CookedMeatRabbit"),
+            ("GEAR_Skillet", "GEAR_RawMeatPtarmigan", "GEAR_CookedMeatPtarmigan"),
             ("GEAR_CookingPot", "GEAR_UncookedPorridge", "GEAR_CookedPorridge") })
         {
             var vessel = Materialize(sample.Item1);
             point.PlaceGear(vessel, reposition: false);
             var raw = Materialize(sample.Item2);
+            raw.SetNormalizedHP(.42f, false);
             var pot = vessel.m_CookingPotItem;
             pot.m_GearItemBeingCooked = raw;
             pot.m_CookingState = CookingPotItem.CookingState.Ready;
+            pot.MaybeSpawnGearItemForInspectMode();
+            var ownerPreview = CaptureCookingFood(pot.GetGearItemForInspectMode());
             var id = Guid.NewGuid();
             var request = new CookingRequest(owner, 2, id);
             var transfer = TakeCookingGear(key, request, 0, point, vessel, pot, handoff: false);
             Check(transfer != null && transfer.Gear == sample.Item3 && pot.m_GearItemBeingCooked == null &&
                 point.GetPlacedGear() == vessel && !raw.gameObject.activeSelf, sample.Item3 + " uses native output and clears only the food");
+            Check(ownerPreview != null && Mathf.Abs(ownerPreview.Condition - transfer.FoodState.Condition) < .001f &&
+                Mathf.Abs(ownerPreview.Weight - transfer.FoodState.Weight) < .001f, sample.Item3 + " transfers the owner's preview condition and weight");
             int count = inventory.NumGearInInventory(sample.Item3);
             AuthorizedCookingTransfers[id] = new CookingAuthorization(area, owner, key, 0, 2, pose, Time.realtimeSinceStartup + 8f);
             AcceptCookingGear(area, owner, transfer, JsonSerializer.Serialize(transfer));
@@ -1493,7 +1530,9 @@ internal static class ScenePlacementSync
             var received = inventory.GearInInventoryAtCondition(sample.Item3, 1, Mathf.RoundToInt(transfer.Condition * 100f));
             Check(inventory.NumGearInInventory(sample.Item3) == count + 1 && received != null &&
                 Mathf.Abs(received.GetNormalizedCondition() - transfer.Condition) < .01f &&
-                Mathf.Abs(received.m_FoodItem.m_HeatPercent - transfer.Heat) < .01f, sample.Item3 + " one inventory item with original condition and heat");
+                Mathf.Abs(received.m_FoodItem.m_HeatPercent - transfer.Heat) < .01f &&
+                Mathf.Abs(received.WeightKG.ToKilograms() - ownerPreview.Weight) < .001f,
+                sample.Item3 + " one inventory item with the owner's condition, weight and heat");
             pot.DetachFromFire();
             point.ResetPlacedGear();
             RetireCookingGear(vessel);
@@ -1709,7 +1748,9 @@ internal static class ScenePlacementSync
             PublishPot(key, new Pot(name, gearPose, slotPose, visible.ToString(),
                 food != null ? food.GetGearName() : "", pot?.GetCookingState().ToString() ?? "",
                 pot != null && float.IsFinite(pot.m_MinutesUntilCooked) ? Mathf.CeilToInt(pot.m_MinutesUntilCooked) : 0, canTake, liquid, pot?.GetHoverText() ?? "",
-                (liquid == 2 ? pot.m_LitersSnowBeingMelted.ToLiters() : pot?.m_LitersWaterBeingBoiled.ToLiters() ?? 0f), portion));
+                (liquid == 2 ? pot.m_LitersSnowBeingMelted.ToLiters() : pot?.m_LitersWaterBeingBoiled.ToLiters() ?? 0f), portion,
+                CaptureCookingFood(food), liquid == 2 ? pot.m_LitersWaterBeingBoiled.ToLiters() : 0f,
+                Mathf.Clamp01(pot?.m_PercentCooked ?? 0f), Mathf.Max(0f, pot?.m_CookingElapsedHours ?? 0f)));
         }
         foreach (int key in PublishedPots.ToArray())
         {
@@ -2002,10 +2043,12 @@ internal static class ScenePlacementSync
         }
         pot.enabled = false;
         pot.m_MinutesUntilCooked = state.Minutes;
+        pot.m_PercentCooked = state.Cooked;
+        pot.m_CookingElapsedHours = state.Elapsed;
         if (Enum.TryParse<CookingPotItem.CookingState>(state.Mode, out var mode)) pot.m_CookingState = mode;
         pot.m_GearItem = root.GetComponent<GearItem>();
         pot.m_LitersSnowBeingMelted = GameCompat.Liters(state.Liquid == 2 ? state.Liters : 0f);
-        pot.m_LitersWaterBeingBoiled = GameCompat.Liters(state.Liquid == 1 ? state.Liters : 0f);
+        pot.m_LitersWaterBeingBoiled = GameCompat.Liters(state.Liquid == 1 ? state.Liters : state.WaterDuringMelt);
         var foodPrefab = state.Food.Length == 0 ? null : MyMod.GetGearItemObject(state.Food);
         GearItem food = null;
         if (foodPrefab != null)
@@ -2013,12 +2056,18 @@ internal static class ScenePlacementSync
             var foodObject = UnityEngine.Object.Instantiate(foodPrefab, root.transform);
             foreach (var collider in foodObject.GetComponentsInChildren<Collider>(true)) collider.enabled = false;
             food = foodObject.GetComponent<GearItem>();
+            ApplyCookingFood(food, state.FoodState);
             pot.m_GearItemBeingCooked = food;
         }
         var request = new CookingRequest(entry.Key.Owner, TakeAction(state), state.Portion);
         inspection = new CookingInspection(MyMod.level_guid, entry.Key.Key, request, root, food);
         try
         {
+            if (pot.m_GrubMeshRenderer != null)
+            {
+                if (state.Liquid != 0) pot.SetUpWaterMesh();
+                else if (food != null) pot.SetUpGrubMesh();
+            }
             if (request.Action == 1) player.EnterInspectGearModeFromCookingPot(root.GetComponent<GearItem>(), pot);
             else pot.StartInspectMode();
             if (!player.IsInspectModeActive()) EndCookingInspection();
@@ -2029,6 +2078,26 @@ internal static class ScenePlacementSync
             MelonLoader.MelonLogger.Warning("[Cooking] Inspect: " + ex.Message);
         }
         return true;
+    }
+
+    private static CookingFood CaptureCookingFood(GearItem item)
+    {
+        if (item?.m_FoodItem is not { } food) return null;
+        return new CookingFood(item.GetNormalizedCondition(), item.WeightKG.ToKilograms(), food.m_CaloriesRemaining,
+            food.m_CaloriesTotal, food.m_HeatPercent, food.m_NumTimesHeatedUp);
+    }
+
+    private static void ApplyCookingFood(GearItem item, CookingFood state)
+    {
+        if (state == null || item?.m_FoodItem is not { } food) return;
+        item.m_RolledSpawnChance = true;
+        item.SetNormalizedHP(state.Condition, roundToWholeNumber: false);
+        item.WeightKG = GameCompat.Kilograms(state.Weight);
+        food.m_CaloriesRemaining = state.Calories;
+        food.m_CaloriesTotal = state.TotalCalories;
+        food.m_HeatPercent = state.Heat;
+        food.m_NumTimesHeatedUp = state.Reheats;
+        item.UpdateDamageShader();
     }
 
     private static void RequestSharedCookware(int key, CookingRequest request)
@@ -2256,7 +2325,7 @@ internal static class ScenePlacementSync
         var placement = handoff ? new CookwareHandoff(Pose.From(point.transform), Pose.From(vessel.transform)) : null;
         var transfer = new GearTransfer(request.Portion, requester, source.GetGearName(), json,
             food != null && float.IsFinite(food.m_HeatPercent) ? food.m_HeatPercent : -1f, food?.m_NumTimesHeatedUp ?? 0,
-            Mathf.Clamp01(source.GetNormalizedCondition()), request.Owner, key, placement);
+            Mathf.Clamp01(source.GetNormalizedCondition()), request.Owner, key, placement, CaptureCookingFood(source));
         string data = JsonSerializer.Serialize(transfer);
         if (string.IsNullOrEmpty(json) || data.Length > SceneMessageLimits.PayloadLimit(9))
         {
@@ -2316,7 +2385,7 @@ internal static class ScenePlacementSync
             pending.Scene != area || pending.Owner != sender || pending.Owner != transfer.SourceOwner ||
             pending.Key != transfer.SourceKey || pending.Requester != transfer.Requester ||
             !IsCookingGearName(transfer.Gear) || IsCookingDummyName(transfer.Gear) ||
-            string.IsNullOrEmpty(transfer.Json) || !float.IsFinite(transfer.Condition) ||
+            string.IsNullOrEmpty(transfer.Json) || !float.IsFinite(transfer.Condition) || !ValidCookingFood(transfer.FoodState) ||
             (pending.Action == UseEmptyCookware) != (transfer.Placement != null) ||
             (transfer.Placement != null && (transfer.Placement.Slot?.Valid != true || transfer.Placement.Pose?.Valid != true ||
                 (transfer.Placement.Slot.Position - pending.Slot.Position).sqrMagnitude >= SlotMatchSquared))) return;
@@ -2390,7 +2459,7 @@ internal static class ScenePlacementSync
     {
         if (transfer == null || transfer.Requester != (MyMod.iAmHost ? 0 : ClientUser.myId) ||
             !IsCookingGearName(transfer.Gear) || IsCookingDummyName(transfer.Gear) ||
-            !float.IsFinite(transfer.Condition) || string.IsNullOrEmpty(transfer.Json)) return false;
+            !float.IsFinite(transfer.Condition) || !ValidCookingFood(transfer.FoodState) || string.IsNullOrEmpty(transfer.Json)) return false;
         var player = GameManager.GetPlayerManagerComponent();
         var inventory = GameManager.GetInventoryComponent();
         var prefab = MyMod.GetGearItemObject(transfer.Gear);
@@ -2412,6 +2481,7 @@ internal static class ScenePlacementSync
         gear.SkipSpawnChanceRollInitialDecayAndAutoEvolve();
         gear.ManualStart();
         gear.SetNormalizedHP(Mathf.Clamp01(transfer.Condition), false);
+        ApplyCookingFood(gear, transfer.FoodState);
         RestoreFoodHeat(gear, transfer);
 
         var placement = transfer.Placement;
@@ -2538,7 +2608,14 @@ internal static class ScenePlacementSync
         UnityEngine.Object.Destroy(visual);
     }
 
-    private static bool ValidPot(Pot pot) => float.IsFinite(pot.Liters) && pot.Liters >= 0f && pot.Liters <= 20f && IsCookingGearName(pot.Gear) && pot.Pose?.Valid == true && pot.Slot?.Valid == true &&
+    private static bool InRange(float value, float max) => float.IsFinite(value) && value >= 0f && value <= max;
+
+    private static bool ValidCookingFood(CookingFood food) => food == null || InRange(food.Condition, 1f) && InRange(food.Weight, 100f) &&
+        InRange(food.Calories, 100000f) && InRange(food.TotalCalories, 100000f) && InRange(food.Heat, 100f) && food.Reheats >= 0;
+
+    private static bool ValidPot(Pot pot) => InRange(pot.Liters, 20f) && InRange(pot.WaterDuringMelt, 20f) &&
+        InRange(pot.Cooked, 1f) && InRange(pot.Elapsed, 10000f) && ValidCookingFood(pot.FoodState) &&
+        IsCookingGearName(pot.Gear) && pot.Pose?.Valid == true && pot.Slot?.Valid == true &&
         pot.Meshes != null && pot.Meshes.Length <= 256 && pot.Meshes.Length % 8 == 0 && pot.Liquid >= 0 && pot.Liquid <= 2 && pot.Food != null && pot.Food.Length <= 80 && pot.Mode != null && pot.Mode.Length <= 32 && pot.NativeHover != null && pot.NativeHover.Length <= 300;
 
     private static string PotMeshKey(MeshRenderer renderer, Transform root)

@@ -44,7 +44,7 @@ public class MyMod : MelonMod
 
 		public const string Company = null;
 
-		public const string Version = "0.16.45";
+		public const string Version = "0.16.46";
 
 		public const string DownloadLink = null;
 
@@ -5711,6 +5711,7 @@ public class MyMod : MelonMod
 		}
 		GameObject gameObject = UnityEngine.Object.Instantiate(prefab, v3, rot);
 		Comps.AnimalActor animalActor = gameObject.AddComponent<Comps.AnimalActor>();
+		animalActor.m_IgnoreCriticalHits = gameObject.GetComponent<BaseAi>()?.m_IgnoreCriticalHits == true;
 		animalActor.m_SharedRabbit = gameObject.GetComponent<AiRabbit>() != null || gameObject.GetComponent<AiPtarmigan>() != null;
 		animalActor.m_LastWildlifeSnapshot = Time.realtimeSinceStartup;
 		animalActor.m_Animal = gameObject;
@@ -5771,6 +5772,8 @@ public class MyMod : MelonMod
 			gameObject2.GetComponent<BaseAi>().ChangeCollisionCapsulesLayer(19);
 		}
 		Animator animator = RemoveAnimalComponents(gameObject2);
+		animator.fireEvents = false;
+		StopWildlifeSounds(gameObject2);
 		if (gameObject2.name.Contains("Rabbit") && (bool)gameObject2.GetComponent<BodyHarvest>())
 		{
 			UnityEngine.Object.Destroy(gameObject2.GetComponent<BodyHarvest>());
@@ -5788,6 +5791,7 @@ public class MyMod : MelonMod
 		}
 		if (gameObject != null)
 		{
+			StopWildlifeSounds(gameObject);
 			ObjectGuid component = gameObject.GetComponent<ObjectGuid>();
 			if (component != null)
 			{
@@ -5832,6 +5836,15 @@ public class MyMod : MelonMod
 			AnimalCorplesList.Add(GUID, animalCorpseObject);
 		}
 		MelonLogger.Msg("Animal corpse spawned " + GUID);
+	}
+
+	internal static void StopWildlifeSounds(GameObject animal)
+	{
+		if (animal == null) return;
+		animal.GetComponent<BaseAi>()?.StopLoopingAudio();
+		GameAudioManager.StopAllSoundsFromGameObject(animal);
+		foreach (var emitter in animal.GetComponentsInChildren<AkGameObj>(true))
+			if (emitter != null && emitter.gameObject != animal) GameAudioManager.StopAllSoundsFromGameObject(emitter.gameObject);
 	}
 
 	public static void ProcessAnimalCorpseSync(DataStr.AnimalKilled Sync)
@@ -6159,10 +6172,17 @@ public class MyMod : MelonMod
 
 	public static void PlayMultiplayer3dAduio(string sound, int from)
 	{
-		if (playersData.Count > 0 && playersData[from] != null && playersData[from].m_Levelid == levelid && players[from] != null && playersData[from].m_LevelGuid == level_guid)
+		if (from >= 0 && from < playersData.Count && from < players.Count && playersData[from]?.m_LevelGuid == level_guid &&
+			players[from] != null && WithinWorldAudioRange(players[from].transform.position, 25f))
 		{
 			GameAudioManager.Play3DSound(sound, players[from]);
 		}
+	}
+
+	internal static bool WithinWorldAudioRange(Vector3 position, float distance)
+	{
+		var player = GameManager.GetPlayerTransform();
+		return !LoadingScreenIsOn && player != null && (player.position - position).sqrMagnitude <= distance * distance;
 	}
 
 	public static void SendMultiplayerAudio(string sound)
@@ -8083,7 +8103,7 @@ public class MyMod : MelonMod
 		ApplyingRemoteOpenable = true;
 		try
 		{
-			OpCl.Close(isImmediate: false);
+			OpCl.Close(isImmediate: !WithinWorldAudioRange(OpCl.transform.position, 20f));
 		}
 		finally
 		{
@@ -8101,7 +8121,7 @@ public class MyMod : MelonMod
 		ApplyingRemoteOpenable = true;
 		try
 		{
-			OpCl.Open(isImmediate: false);
+			OpCl.Open(isImmediate: !WithinWorldAudioRange(OpCl.transform.position, 20f));
 		}
 		finally
 		{

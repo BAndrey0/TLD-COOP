@@ -663,6 +663,7 @@ public class Comps
 	public class AnimalActor : MonoBehaviour
 	{
 		public GameObject m_Animal;
+		public bool m_IgnoreCriticalHits;
 
 		public int NoResponce = 5;
 
@@ -1121,6 +1122,8 @@ public class Comps
 
 		public void SetAiMode()
 		{
+			if (m_NextMode == AiMode.Dead && m_CurrentMode != AiMode.Dead)
+				MyMod.StopWildlifeSounds(m_Animal);
 			if (m_CurrentMode != m_NextMode)
 			{
 				switch (m_CurrentMode)
@@ -2126,7 +2129,7 @@ public class Comps
 			Quaternion rotation2 = Quaternion.Lerp(m_Player.transform.rotation, rotation, Time.deltaTime * 20f);
 			m_Player.transform.position = position2;
 			m_Player.transform.rotation = rotation2;
-			string brakingSounds = multiPlayerClientData.m_BrakingSounds;
+			string brakingSounds = MyMod.WithinWorldAudioRange(position2, 25f) ? multiPlayerClientData.m_BrakingSounds : "";
 			if (m_BreakingSound != brakingSounds)
 			{
 				m_BreakingSound = brakingSounds;
@@ -2137,14 +2140,14 @@ public class Comps
 				}
 				if (m_BreakingSound != "")
 				{
-					m_BreakingSoundReference = GameAudioManager.PlaySound(brakingSounds, m_Player);
+					m_BreakingSoundReference = GameAudioManager.Play3DSound(brakingSounds, m_Player);
 				}
 			}
-			if (multiPlayerClientData.m_HeavyBreath)
+			if (multiPlayerClientData.m_HeavyBreath && MyMod.WithinWorldAudioRange(position2, 12f))
 			{
 				if (m_HeavyBreathSoundReference == 0)
 				{
-					m_HeavyBreathSoundReference = GameAudioManager.PlaySound("PLAY_BREATH_3D", m_Player);
+					m_HeavyBreathSoundReference = GameAudioManager.Play3DSound("PLAY_BREATH_3D", m_Player);
 				}
 			}
 			else if (m_HeavyBreathSoundReference != 0)

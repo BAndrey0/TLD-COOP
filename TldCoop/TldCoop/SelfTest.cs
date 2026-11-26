@@ -794,6 +794,7 @@ public static class SelfTest
 			CoopContainerFlow.ProbeDeniedDoor(Check);
 			MyMod.ProbeDroppedFish(Check);
 			ScenePlacementSync.ProbeCookingAndBooks();
+			ProbeWildlifeAndAudio(Check);
 			var input = InputManager.m_InputSystem;
 			var autoWalk = Il2CppRewired.ReInput.mapping.GetAction("AutoWalk");
 			Check(autoWalk != null && input.m_ActionToActionId.ContainsKey(InputManager.InputAction.AutoWalk) &&
@@ -821,6 +822,31 @@ public static class SelfTest
 		{
 			MyMod.iAmHost = host;
 			Application.Quit();
+		}
+	}
+
+	private static void ProbeWildlifeAndAudio(Action<bool, string> check)
+	{
+		var player = GameManager.GetPlayerTransform();
+		var point = player.position + player.forward * 5f;
+		check(MyMod.WithinWorldAudioRange(point, 20f) &&
+			!MyMod.WithinWorldAudioRange(player.position + player.forward * 30f, 20f),
+			"near and distant door replays use different audio paths");
+		const string cougar = "WILDLIFE_CougarA";
+		var harvest = WildlifeCompat.GetPrefab(cougar)?.GetComponentInChildren<BodyHarvest>(true);
+		var units = Shared.GetBodyHarvestUnits(cougar);
+		check(harvest != null && units.m_Meat > 0f && units.m_Guts > 0 && units.m_Guts == harvest.m_GutAvailableUnits &&
+			units.m_Meat >= harvest.m_MeatAvailableMin.ToKilograms() && units.m_Meat <= harvest.m_MeatAvailableMax.ToKilograms(),
+			$"native CougarA harvest has {units.m_Meat:F2} kg of meat and {units.m_Guts} guts");
+		foreach (string prefabName in new[] { cougar, "WILDLIFE_Bear" })
+		{
+			string id = Guid.NewGuid().ToString("D");
+			MyMod.SpawnAnimalCorpse(prefabName, point, Quaternion.identity, id, "", knocked: false);
+			var corpse = ObjectGuidManager.Lookup(id);
+			check(corpse != null && corpse.GetComponent<Comps.AnimalCorpseObject>() != null &&
+				Pathes.LiveAnimalAudioEmitter(id) == null && !corpse.GetComponentInChildren<Animator>().fireEvents,
+				$"{prefabName} corpse cannot receive living sounds or play animation events");
+			UnityEngine.Object.Destroy(corpse);
 		}
 	}
 
